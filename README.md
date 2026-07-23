@@ -3,6 +3,7 @@
 A research-oriented flight control stack for a custom STM32-based quadrotor, developed from first principles to explore modern embedded systems, nonlinear state estimation, and multiloop flight control.
 
 Unlike many hobby flight controllers that evolve from existing autopilot frameworks, this project has been designed from the ground up as an engineering and research platform. Every subsystem—from sensor acquisition and estimation to control and actuation—is implemented with an emphasis on mathematical modelling, deterministic real-time execution, and modular software architecture.
+
 ---
 
 # System Architecture
