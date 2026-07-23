@@ -1,9 +1,8 @@
 # Quadcopter Flight Controller
 
-A research-oriented flight control stack for a custom STM32-based quadcopter, developed to explore modern embedded systems, nonlinear state estimation, and control theory from first principles.
+A research-oriented flight control stack for a custom STM32-based quadrotor, developed from first principles to explore modern embedded systems, nonlinear state estimation, and multiloop flight control.
 
-Unlike many flight controllers built by extending existing autopilot frameworks, this project is designed from the ground up as a learning and engineering platform. Every subsystem—from sensor drivers to state estimation and motor control—is implemented with an emphasis on understanding the underlying mathematics, real-time constraints, and software architecture.
-
+Unlike many hobby flight controllers that evolve from existing autopilot frameworks, this project has been designed from the ground up as an engineering and research platform. Every subsystem—from sensor acquisition and estimation to control and actuation—is implemented with an emphasis on mathematical modelling, deterministic real-time execution, and modular software architecture.
 ---
 
 # System Architecture
@@ -189,17 +188,36 @@ class CTRL ctrl
 # Repository Structure
 
 ```text
-src/
-├── actuation/
-├── communication/
-├── control/
+/src
 ├── core/
-├── drivers/
-├── estimation/
-├── flight_modes/
+│   ├── shared_state.hpp         Central data bus + motor telemetry fields
+│   └── system_init.cpp          All tasks + ISRs (USB CDC for MAVLink)
 ├── math/
+│   ├── vector3.hpp              3D vector
+│   └── quaternion.hpp           Hamilton quaternion + exp-map
+├── estimation/
+│   ├── mahony_ahrs.hpp/cpp      AHRS @ 3840 Hz
+│   └── ekf.hpp/cpp              23-state ES-EKF @ 480 Hz
+├── drivers/
+│   ├── lsm6dsv.hpp/cpp          LSM6DSV320XTR IMU
+│   └── startup_calibration.hpp  Pre-arm gyro bias
+├── control/
+│   ├── pid.hpp                  Generic PID with anti-windup
+│   ├── rate_controller.hpp      Inner loop @ 3840 Hz
+│   ├── attitude_controller.hpp  Quaternion attitude @ 3840 Hz
+│   ├── velocity_controller.hpp  Velocity + wind rejection @ 100 Hz
+│   └── position_controller.hpp  GPS position hold @ 50 Hz
+├── actuation/
+│   ├── dshot.hpp/cpp            Bidir DSHOT300 UART half-duplex
+│   └── mixer.hpp                X-frame mixer + thrust linearisation
+├── flight_modes/
+│   └── flight_mode_fsm.hpp/cpp  FSM with full cascaded camera path
+├── communication/
+│   └── crsf.hpp/cpp             CRSF/ELRS parser
 ├── safety/
+│   └── safety_monitor.hpp/cpp   100 Hz watchdog
 └── simulation/
+    └── sim_interface.hpp        HIL/SIL hooks
 ```
 
 The project is organised around functional subsystems rather than hardware peripherals, allowing each module to be developed and tested independently.
@@ -231,16 +249,6 @@ The repository contains detailed engineering documentation covering both impleme
 | **ARCHITECTURE.md** | Hardware architecture, software structure, pin assignments, task scheduling, and implementation details. |
 | **process.md** | Controller design, estimator mathematics, tuning procedures, and engineering rationale. |
 
-In addition to the repository documentation, the project is accompanied by a series of technical articles exploring topics such as:
-
-- Rigid-body dynamics
-- Quaternion mathematics
-- Error-State Kalman Filtering
-- Cascaded control systems
-- Real-time embedded software
-- Digital twins and simulation
-- Mechatronic system design
-
 ---
 
 # Project Goals
@@ -260,6 +268,37 @@ The emphasis is on developing a rigorous understanding of the mathematics and en
 
 ---
 
+# Development Roadmap
+
+The repository currently implements the core estimation, control, and embedded architecture. Peripheral interfaces such as GPS, barometer, telemetry, and onboard logging are being integrated incrementally as hardware validation progresses.
+
+## Phase 1 — Core Flight Stack
+- [x] Sensor drivers
+- [x] Cascaded controller
+- [x] Mahony AHRS
+- [x] Error-State EKF
+- [x] Bidirectional DSHOT
+- [x] Flight modes
+
+## Phase 2 — Navigation
+- [ ] GPS parser
+- [ ] Magnetometer
+- [ ] Barometer
+- [ ] MAVLink
+
+## Phase 3 — Infrastructure
+- [ ] SD logging
+- [ ] CLI
+- [ ] Parameter storage
+
+## Phase 4 — Research
+- [ ] SIL
+- [ ] HIL
+- [ ] Digital twin
+- [ ] Adaptive control
+
+---
+
 # Future Work
 
 Planned developments include:
@@ -267,7 +306,6 @@ Planned developments include:
 - Hardware-in-the-loop (HIL) simulation
 - Software-in-the-loop (SIL) simulation
 - Online parameter identification
-- Closed-loop thrust estimation using bidirectional DSHOT telemetry
 - Adaptive control
 - Mission planning and autonomous navigation
 - Vision and rangefinder integration
