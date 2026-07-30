@@ -1,3 +1,4 @@
+
 # Flight Controller — Control Architecture & Process Reference
 
 > **This document is standalone.** It is not connected to any source file.
@@ -42,16 +43,16 @@ aviation autopilots.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     CAMERA MODE (all loops)                        │
-├────────────┬────────────┬────────────┬────────────┬────────────────┤
-│ Loop       │ Rate       │ Input      │ Output     │ Physical unit  │
-├────────────┼────────────┼────────────┼────────────┼────────────────┤
-│ Position   │ 50 Hz      │ pos error  │ vel sp     │ m → m/s        │
-│ Velocity   │ 100 Hz     │ vel error  │ tilt angle │ m/s → rad      │
-│ Attitude   │ 3840 Hz    │ angle error│ rate sp    │ rad → rad/s    │
-│ Rate       │ 3840 Hz    │ rate error │ torque     │ rad/s → [-1,1] │
-│ Mixer      │ 3840 Hz    │ torque     │ DSHOT      │ [-1,1] → 0-2047│
-└────────────┴────────────┴────────────┴────────────┴────────────────┘
+│                     CAMERA MODE (all loops)                         │
+├────────────┬────────────┬────────────┬────────────┬────────────-────┤
+│ Loop       │ Rate       │ Input      │ Output     │ Physical unit   │
+├────────────┼────────────┼────────────┼────────────┼────────────────-┤
+│ Position   │ 50 Hz      │ pos error  │ vel sp     │ m → m/s         │
+│ Velocity   │ 100 Hz     │ vel error  │ tilt angle │ m/s → rad       │
+│ Attitude   │ 3840 Hz    │ angle error│ rate sp    │ rad → rad/s     │
+│ Rate       │ 3840 Hz    │ rate error │ torque     │ rad/s → [-1,1]  │
+│ Mixer      │ 3840 Hz    │ torque     │ DSHOT      │ [-1,1] → 0-2047 │
+└────────────┴────────────┴────────────┴────────────┴────────────────-┘
 
 FPV MODE: Position → Velocity → Attitude loops all bypassed.
           RC sticks feed directly to Rate loop as rate setpoints.
@@ -383,11 +384,11 @@ transition feels like the drone suddenly becomes more responsive.
 The velocity controller depends on good velocity estimates from the EKF.
 Without good velocity measurements it degrades to approximate behaviour:
 
-| Sensors available | Velocity quality | Controller behaviour |
-|---|---|---|
-| GPS + baro + mag | Excellent (±0.1 m/s) | Full wind rejection, tight hold |
-| Baro + mag only  | Good (drift over time)| Short-term rejection, slow drift |
-| IMU only (Mahony)| Poor (integrated noise)| Very approximate, not reliable |
+| Available Sensors               | Velocity Estimate Quality   | Controller Behaviour                                                     |
+|---------------------------------|-----------------------------|--------------------------------------------------------------------------|
+| GPS + Barometer + Magnetometer  | Excellent (≈ ±0.1 m/s)      | Full wind rejection with accurate position hold                          |
+| Barometer + Magnetometer        | Good (slow drift over time) | Good short-term wind rejection; gradual position drift                   |
+| IMU Only (Mahony AHRS)          | Poor (integration drift)    | Approximate stabilisation only; unsuitable for reliable velocity control |
 
 The EKF's 15-state error-state design specifically provides accurate velocity
 estimates even during GPS dropouts by propagating IMU measurements through the
@@ -522,28 +523,28 @@ fusion library and similar to PX4's attitude estimator design.
 
 ## Reference: System State Variables
 
-| Variable | Symbol | Frame | Source | Updated at |
-|---|---|---|---|---|
-| Position | p | NED, m | EKF | 480 Hz |
-| Velocity | v | NED, m/s | EKF | 480 Hz |
-| Attitude | q | quat (body→NED) | Mahony | 3840 Hz |
-| Euler angles | φθψ | ZYX, rad | From q | 3840 Hz |
-| Angular rate | ω | body FRD, rad/s | IMU (bias corrected) | 3840 Hz |
-| Gyro bias | b_g | body, rad/s | EKF | 480 Hz |
-| Accel bias | b_a | body, m/s² | EKF | 480 Hz |
-| Baro altitude | h | MSL, m | MS5611 | 50 Hz |
-| GPS position | p_gps | WGS84 | USART1 | 10 Hz |
-| Mag field | m | body, norm | QMC5883L | 100 Hz |
-| Motor eRPM | ω_i | elec, RPM | DSHOT bidir | 3840 Hz |
-| Motor thrust | F_i | body, N | kF × RPM² | 3840 Hz |
+| Variable       | Symbol        | Frame / Convention      | Source                 | Update Rate |
+|----------------|---------------|-------------------------|------------------------|-------------|
+| Position       | **p**         | NED (m)                 | EKF                    | **480 Hz**  |
+| Velocity       | **v**         | NED (m/s)               | EKF                    | **480 Hz**  |
+| Attitude       | **q**         | Quaternion (Body → NED) | Mahony AHRS            | **3840 Hz** |
+| Euler Angles   | **(φ, θ, ψ)** | ZYX (rad)               | Derived from **q**     | **3840 Hz** |
+| Angular Rate   | **ω**         | Body FRD (rad/s)        | IMU (bias corrected)   | **3840 Hz** |
+| Gyro Bias      | **b_g**       | Body (rad/s)            | EKF                    | **480 Hz**  |
+| Accel Bias     | **b_a**       | Body (m/s²)             | EKF                    | **480 Hz**  |
+| Baro Altitude  | **h**         | MSL (m)                 | MS5611                 | **50 Hz**   |
+| GPS Position   | **p_gps**     | WGS84 (lat, lon, alt)   | USART1                 | **10 Hz**   |
+| Magnetic Field | **m**         | Body (normalised)       | QMC5883L               | **100 Hz**  |
+| Motor eRPM     | **ω_i**       | Electrical RPM          | Bidirectional DSHOT    | **3840 Hz** |
+| Motor Thrust   | **F_i**       | Body (N)                | **F_i = k_F · RPM_i²** | **3840 Hz** |
 
 ## Reference: Frame Conventions
 
-| Frame | Name | Definition |
-|---|---|---|
-| World | NED | North=+X, East=+Y, Down=+Z |
-| Body | FRD | Forward=+X, Right=+Y, Down=+Z |
-| Sensor | chip | Remapped to FRD in driver |
+| Frame  | Name | Definition                    |
+|--------|------|-------------------------------|
+| World  | NED  | North=+X, East=+Y, Down=+Z    |
+| Body   | FRD  | Forward=+X, Right=+Y, Down=+Z |
+| Sensor | chip | Remapped to FRD in driver     |
 
 Gravity in NED: **g = [0, 0, +9.80665] m/s²**  (positive down)
 

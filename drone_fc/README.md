@@ -1,3 +1,4 @@
+
 # Drone Flight Controller — Architecture & Setup Guide
 
 ## Overview
@@ -12,25 +13,25 @@ rejection math, and tuning procedure, see **[process.md](process.md)**.
 
 ## Hardware
 
-| Component | Part | Interface | Pins |
-|---|---|---|---|
-| MCU | STM32F722RET6 | — | LQFP64 |
-| IMU | LSM6DSV320XTR | SPI1 | PA5/6/7, CS=PA4, DRDY=PC4 |
-| Barometer | MS5611 | SPI1 | shared SCK/MISO/MOSI, CS=PC5 |
-| Magnetometer | QMC5883L | I2C1 | PB6 SCL, PB7 SDA, INT=PD2 |
-| GPS | Any NMEA/UBX | USART1 | PA9 TX, PA10 RX |
-| RC Receiver | CRSF/ELRS | USART2 @ 420 kbaud | PA2 TX, PA3 RX |
-| Telemetry | MAVLink via **USB CDC** | USB OTG FS | PA11 D−, PA12 D+ |
-| Motor 1 | Bidir DSHOT300 | UART4 half-duplex | PA0 |
-| Motor 2 | Bidir DSHOT300 | UART5 half-duplex | PC12 |
-| Motor 3 | Bidir DSHOT300 | USART3 half-duplex | PB10 |
-| Motor 4 | Bidir DSHOT300 | USART6 half-duplex | PC6 |
-| SD Card | SPI2 | SPI2 | PB13/14/15, CS=PC1 |
-| Battery V | Resistor divider | ADC1 IN1 | PA1 |
-| Current | Hall sensor | ADC1 IN10 | PC0 |
-| Status LED | Green | GPIO | PB0 |
-| Error LED | Red | GPIO | PB12 |
-| Buzzer | PWM or GPIO | PC7 | TIM8_CH2 optional |
+| Component    | Part                    | Interface          | Pins                         |
+|--------------|-------------------------|--------------------|------------------------------|
+| MCU          | STM32F722RET6           |          —         | LQFP64                       |
+| IMU          | LSM6DSV320XTR           | SPI1               | PA5/6/7, CS=PA4, DRDY=PC4    |
+| Barometer    | MS5611                  | SPI1               | shared SCK/MISO/MOSI, CS=PC5 |
+| Magnetometer | QMC5883L                | I2C1               | PB6 SCL, PB7 SDA, INT=PD2    |
+| GPS          | Any NMEA/UBX            | USART1             | PA9 TX, PA10 RX              |
+| RC Receiver  | CRSF/ELRS               | USART2 @ 420 kbaud | PA2 TX, PA3 RX               |
+| Telemetry    | MAVLink via **USB CDC** | USB OTG FS         | PA11 D−, PA12 D+             |
+| Motor 1      | Bidir DSHOT300          | UART4 half-duplex  | PA0                          |
+| Motor 2      | Bidir DSHOT300          | UART5 half-duplex  | PC12                         |
+| Motor 3      | Bidir DSHOT300          | USART3 half-duplex | PB10                         |
+| Motor 4      | Bidir DSHOT300          | USART6 half-duplex | PC6                          |
+| SD Card      | SPI2                    | SPI2               | PB13/14/15, CS=PC1           |
+| Battery V    | Resistor divider        | ADC1 IN1           | PA1                          |
+| Current      | Hall sensor             | ADC1 IN10          | PC0                          |
+| Status LED   | Green                   | GPIO               | PB0                          |
+| Error LED    | Red                     | GPIO               | PB12                         |
+| Buzzer       | PWM or GPIO             | PC7                | TIM8_CH2 optional            |
 
 > **UART count:** the LQFP64 package exposes exactly 6 UARTs
 > (USART1,2,3,6 + UART4,5). MAVLink uses USB CDC to free USART3 for Motor 3.
@@ -42,72 +43,72 @@ rejection math, and tuning procedure, see **[process.md](process.md)**.
 
 Pin 1 = bottom-left (notch). Numbering goes counterclockwise.
 
-| Pin | GPIO | Function | Notes |
-|---|---|---|---|
-| 1 | VBAT | Battery backup | 100 nF to GND |
-| 2 | PC13 | Free GPIO | RTC wake-up |
-| 3 | PC14 | OSC32_IN | 32.768 kHz crystal |
-| 4 | PC15 | OSC32_OUT | |
-| 5 | PH0 | OSC_IN | 8 MHz HSE crystal |
-| 6 | PH1 | OSC_OUT | |
-| 7 | NRST | Reset | 100 nF to GND |
-| 8 | PC0 | ADC1_IN10 | Current sensor |
-| 9 | PC1 | GPIO out | SD card /CS |
-| 10 | PC2 | Free GPIO | |
-| 11 | PC3 | Free GPIO | |
-| 12 | VSSA | Analogue GND | Star GND to pin 13 |
-| 13 | VDDA | Analogue VDD | 1 µF + 10 nF to VSSA |
-| 14 | **PA0** | **UART4 TX AF8** | **Motor 1 half-duplex** |
-| 15 | **PA1** | **ADC1_IN1** | **Battery voltage** |
-| 16 | **PA2** | **USART2 TX AF7** | **CRSF TX** |
-| 17 | **PA3** | **USART2 RX AF7** | **CRSF RX** |
-| 18 | VSS | Ground | |
-| 19 | VDD | 3.3 V | |
-| 20 | **PA4** | **GPIO out** | **IMU /CS (SPI1)** |
-| 21 | **PA5** | **SPI1 SCK AF5** | **IMU + Baro** |
-| 22 | **PA6** | **SPI1 MISO AF5** | |
-| 23 | **PA7** | **SPI1 MOSI AF5** | |
-| 24 | **PC4** | **EXTI4 input** | **IMU DRDY (INT1)** |
-| 25 | **PC5** | **GPIO out** | **Baro /CS (SPI1)** |
-| 26 | **PB0** | **GPIO out** | **Status LED (GREEN)** |
-| 27 | PB1 | ADC1_IN9 | RSSI / spare |
-| 28 | PB2 | BOOT1 | Tie to GND |
-| 29 | **PB10** | **USART3 TX AF7** | **Motor 3 half-duplex** |
-| 30 | VCAP_1 | Internal reg cap | **4.7 µF ESR<0.2 Ω to GND — NOT GPIO** |
-| 31 | VSS | Ground | |
-| 32 | VDD | 3.3 V | |
-| 33 | **PB12** | **GPIO out** | **Error LED (RED)** |
-| 34 | **PB13** | **SPI2 SCK AF5** | **SD card** |
-| 35 | **PB14** | **SPI2 MISO AF5** | **SD card** |
-| 36 | **PB15** | **SPI2 MOSI AF5** | **SD card** |
-| 37 | **PC6** | **USART6 TX AF8** | **Motor 4 half-duplex** |
-| 38 | PC7 | GPIO / TIM8_CH2 | Buzzer |
-| 39 | PC8 | Free GPIO | Camera trigger (TIM8_CH3) |
-| 40 | PC9 | Free GPIO | |
-| 41 | PA8 | Free / TIM1_CH1 | Camera shutter |
-| 42 | **PA9** | **USART1 TX AF7** | **GPS TX** |
-| 43 | **PA10** | **USART1 RX AF7** | **GPS RX** |
-| 44 | **PA11** | **USB OTG FS D−** | **MAVLink CDC** |
-| 45 | **PA12** | **USB OTG FS D+** | **MAVLink CDC** |
-| 46 | PA13 | SWDIO | Debug — keep accessible |
-| 47 | VCAP_2 | — | 100 nF to VDD |
-| 48 | VDD | 3.3 V | |
-| 49 | PA14 | SWCLK | Debug |
-| 50 | PA15 | Free GPIO | (JTDI, remap after debug) |
-| 51 | PC10 | Free GPIO | |
-| 52 | PC11 | Free GPIO | |
-| 53 | **PC12** | **UART5 TX AF8** | **Motor 2 half-duplex** |
-| 54 | **PD2** | **EXTI2 input** | **Mag data-ready** |
-| 55 | PB3 | Free GPIO | (JTDO) |
-| 56 | PB4 | Free GPIO | |
-| 57 | PB5 | Free GPIO | |
-| 58 | **PB6** | **I2C1 SCL AF4** | **QMC5883L** |
-| 59 | **PB7** | **I2C1 SDA AF4** | **QMC5883L** |
-| 60 | BOOT0 | Boot mode | Tie GND, add button for DFU |
-| 61 | PB8 | Free GPIO | I2C1 SCL alt |
-| 62 | PB9 | Free GPIO | I2C1 SDA alt |
-| 63 | VSS | Ground | |
-| 64 | VDD | 3.3 V | |
+| Pin | GPIO    | Function           | Notes                                   |
+|-----|---------|--------------------|-----------------------------------------|
+| 1   | VBAT    | Battery backup     | 100 nF to GND                           |
+| 2   | PC13    | Free GPIO          | RTC wake-up (unused)                    |
+| 3   | PC14    | OSC32_IN           | 32.768 kHz crystal                      |
+| 4   | PC15    | OSC32_OUT          |                                         |
+| 5   | PH0     | OSC_IN             | 8 MHz HSE crystal                       |
+| 6   | PH1     | OSC_OUT            |                                         |
+| 7   | NRST    | Reset              | 100 nF to GND                           |
+| 8   | PC0     | ADC1_IN10          | Current sensor                          |
+| 9   | PC1     | GPIO out           | SD card /CS                             |
+| 10  | PC2     | Free GPIO          |                                         |
+| 11  | PC3     | Free GPIO          |                                         |
+| 12  | VSSA    | Analogue GND       | Star GND to pin 13                      |
+| 13  | VDDA    | Analogue VDD       | 1 µF + 10 nF to VSSA                    |
+| 14  | PA0     | UART4 TX AF8       | Motor 1 half-duplex                     |
+| 15  | PA1     | ADC1_IN1           | Battery voltage                         |
+| 16  | PA2     | USART2 TX AF7      | CRSF TX                                 |
+| 17  | PA3     | USART2 RX AF7      | CRSF RX                                 |
+| 18  | VSS     | Ground             |                                         |
+| 19  | VDD     | 3.3 V              |                                         |
+| 20  | PA4     | GPIO out           | IMU /CS (SPI1)                          |
+| 21  | PA5     | SPI1 SCK AF5       | IMU + Baro                              |
+| 22  | PA6     | SPI1 MISO AF5      |                                         |
+| 23  | PA7     | SPI1 MOSI AF5      |                                         |
+| 24  | PC4     | EXTI4 input        | IMU DRDY (INT1)                         |
+| 25  | PC5     | GPIO out           | Baro /CS (SPI1)                         |
+| 26  | PB0     | GPIO out           | Status LED (GREEN)                      |
+| 27  | PB1     | ADC1_IN9           | RSSI / spare                            |
+| 28  | PB2     | BOOT1              | Tie to GND                              |
+| 29  | PB10    | USART3 TX AF7      | Motor 3 half-duplex                     |
+| 30  | VCAP_1  | Internal reg cap   | 4.7 µF ESR < 0.2 Ω to GND — NOT GPIO    |
+| 31  | VSS     | Ground             |                                         |
+| 32  | VDD     | 3.3 V              |                                         |
+| 33  | PB12    | GPIO out           | Error LED (RED)                         |
+| 34  | PB13    | SPI2 SCK AF5       | SD card                                 |
+| 35  | PB14    | SPI2 MISO AF5      | SD card                                 |
+| 36  | PB15    | SPI2 MOSI AF5      | SD card                                 |
+| 37  | PC6     | USART6 TX AF8      | Motor 4 half-duplex                     |
+| 38  | PC7     | GPIO / TIM8_CH2    | Buzzer                                  |
+| 39  | PC8     | Free GPIO          | Camera trigger (TIM8_CH3)               |
+| 40  | PC9     | Free GPIO          |                                         |
+| 41  | PA8     | Free / TIM1_CH1    | Camera shutter                          |
+| 42  | PA9     | USART1 TX AF7      | GPS TX                                  |
+| 43  | PA10    | USART1 RX AF7      | GPS RX                                  |
+| 44  | PA11    | USB OTG FS D−      | MAVLink CDC                             |
+| 45  | PA12    | USB OTG FS D+      | MAVLink CDC                             |
+| 46  | PA13    | SWDIO              | Debug — keep accessible                 |
+| 47  | VCAP_2  | —                  | 100 nF to VDD                           |
+| 48  | VDD     | 3.3 V              |                                         |
+| 49  | PA14    | SWCLK              | Debug                                   |
+| 50  | PA15    | Free GPIO          | JTDI, remap after debug                 |
+| 51  | PC10    | Free GPIO          |                                         |
+| 52  | PC11    | Free GPIO          |                                         |
+| 53  | PC12    | UART5 TX AF8       | Motor 2 half-duplex                     |
+| 54  | PD2     | EXTI2 input        | Mag data-ready                          |
+| 55  | PB3     | Free GPIO          | JTDO                                    |
+| 56  | PB4     | Free GPIO          |                                         |
+| 57  | PB5     | Free GPIO          |                                         |
+| 58  | PB6     | I2C1 SCL AF4       | QMC5883L                                |
+| 59  | PB7     | I2C1 SDA AF4       | QMC5883L                                |
+| 60  | BOOT0   | Boot mode          | Tie GND, add button for DFU             |
+| 61  | PB8     | Free GPIO          | I2C1 SCL alt                            |
+| 62  | PB9     | Free GPIO          | I2C1 SDA alt                            |
+| 63  | VSS     | Ground             |                                         |
+| 64  | VDD     | 3.3 V              |                                         |
 
 ---
 
@@ -173,57 +174,57 @@ FPV MODE:  RC sticks → rate setpoint → RateController → Mixer
 
 ## Mode Differences
 
-| Parameter | FPV / Acro | Camera / Stable |
-|---|---|---|
-| Position loop | Off | GPS hold (50 Hz) |
-| **Velocity loop** | **Off** | **On (100 Hz) — wind rejection** |
-| Attitude loop | Off — full acro | On (3840 Hz) |
-| Rate PIDs | High Kp/Kd | Smooth Kp/Kd |
-| Max roll rate | 800 deg/s | 220 deg/s |
-| Max tilt | Unlimited | ±40° |
-| Yaw | Rate control | Heading hold |
-| Motor idle | 150 | 80 |
-| Expo (roll) | 40% cubic | 15% cubic |
-| Stick mapping | Sticks → rates | Sticks → velocity |
+| Parameter      | FPV / Acro          | Camera / Stable                |
+|----------------|---------------------|--------------------------------|
+| Position Loop  | Off                 | GPS Hold (50 Hz)               |
+| Velocity Loop  | Off                 | On (100 Hz) – Wind Rejection   |
+| Attitude Loop  | Off – Full Acro     | On (3840 Hz)                   |
+| Rate PID Gains | High Kp / Kd        | Smooth Kp / Kd                 |
+| Max Roll Rate  | 800°/s              | 220°/s                         |
+| Max Tilt Angle | Unlimited           | ±40°                           |
+| Yaw Control    | Rate Control        | Heading Hold                   |
+| Motor Idle     | 150                 | 80                             |
+| Roll Expo      | 40% Cubic           | 15% Cubic                      |
+| Stick Mapping  | Sticks → Body Rates | Sticks → Velocity Commands     |
 
 ---
 
 ## Bug Fixes vs Original Codebase
 
-| # | Bug | File | Marker |
-|---|---|---|---|
-| 1 | `0.07FF` float literal used as bitmask — all CH2-CH16 garbage | `communication/crsf.cpp` → `unpackChannels()` | `/* BUG FIX #1 */` |
-| 2 | No CRC validation on CRSF frames — corrupted frames accepted | `communication/crsf.cpp` → `feedByte()` | `/* BUG FIX #2 */` |
-| 3 | No RC failsafe timeout — stale values persisted indefinitely | `communication/crsf.cpp` → `tick1ms()` | `/* BUG FIX #3 */` |
-| 4 | Raw [172-1811] RC values reached PID without normalisation | `communication/crsf.cpp` → `processFrame()` | `/* BUG FIX #4 */` |
-| 5 | `System_Init` truncated — mutexes never created, scheduler never started | `core/system_init.cpp` → `FC_SystemInit()` | `/* BUG FIX #5 */` |
-| 6 | `mavTxMutex` shared with debug UART in `safety.c` — race condition | `core/system_init.cpp` → `MAVLinkTask()` | `/* BUG FIX #6 */` |
-| 7 | SD card opened/closed per log write — ~100 ms stall per entry | `core/system_init.cpp` → `LoggerTask()` | `/* BUG FIX #7 */` |
-| 8 | Single-loop PID on angle only, no inner rate loop | `control/rate_controller.hpp`, `control/attitude_controller.hpp` | `/* BUG FIX #8 */` |
-| 9 | No IMU driver — `ax/gx` were uninitialised globals | `drivers/lsm6dsv.hpp/.cpp` | `/* BUG FIX #9 */` |
-| 10 | GPS fence used raw lat/lon deltas, not real distance | `safety/safety_monitor.cpp` → `checkGeofence()` | `/* BUG FIX #10 */` |
-| 11 | `safety.c` `while(1)` on fault with no recovery | `safety/safety_monitor.cpp` → `triggerMotorKill()` | `/* BUG FIX #11 */` |
-| PINS-A | `STATUS_LED` on PA5 — conflicts with SPI1_SCK | `Inc/fc_config.h` | Moved to PB0 |
-| PINS-B | Motor 4 on UART7 — not bonded in LQFP64 package | `actuation/dshot.hpp`, `core/system_init.cpp` | Moved to USART6/PC6 |
+| #      | Issue                                                                           | File / Location                                                    | Marker                    |
+|--------|---------------------------------------------------------------------------------|--------------------------------------------------------------------|---------------------------|
+| 1      | `0.07FF` float literal used as bitmask; channels 2–16 decoded incorrectly       | `communication/crsf.cpp` → `unpackChannels()`                      | `/* BUG FIX #1 */`        |
+| 2      | Missing CRC validation allowed corrupted CRSF frames to be accepted             | `communication/crsf.cpp` → `feedByte()`                            | `/* BUG FIX #2 */`        |
+| 3      | No RC failsafe timeout; stale receiver values persisted indefinitely            | `communication/crsf.cpp` → `tick1ms()`                             | `/* BUG FIX #3 */`        |
+| 4      | Raw CRSF values (172–1811) passed directly to the PID controllers               | `communication/crsf.cpp` → `processFrame()`                        | `/* BUG FIX #4 */`        |
+| 5      | `FC_SystemInit()` incomplete; mutexes not created and scheduler never started   | `core/system_init.cpp` → `FC_SystemInit()`                         | `/* BUG FIX #5 */`        |
+| 6      | `mavTxMutex` shared with debug UART, creating a transmit race condition         | `core/system_init.cpp` → `MAVLinkTask()`                           | `/* BUG FIX #6 */`        |
+| 7      | SD card opened and closed for every log entry, causing ~100 ms stalls           | `core/system_init.cpp` → `LoggerTask()`                            | `/* BUG FIX #7 */`        |
+| 8      | Attitude controller used a single-loop PID; missing inner rate loop             | `control/rate_controller.hpp`<br>`control/attitude_controller.hpp` | `/* BUG FIX #8 */`        |
+| 9      | No IMU driver implementation; `ax` and `gx` remained uninitialised              | `drivers/lsm6dsv.hpp/.cpp`                                         | `/* BUG FIX #9 */`        |
+| 10     | Geofence calculated from raw latitude/longitude deltas instead of true distance | `safety/safety_monitor.cpp` → `checkGeofence()`                    | `/* BUG FIX #10 */`       |
+| 11     | Fault handler entered an unrecoverable `while(1)` loop                          | `safety/safety_monitor.cpp` → `triggerMotorKill()`                 | `/* BUG FIX #11 */`       |
+| PINS-A | `STATUS_LED` assigned to PA5, conflicting with `SPI1_SCK`                       | `Inc/fc_config.h`                                                  | Moved to **PB0**          |
+| PINS-B | Motor 4 assigned to `UART7`, unavailable on the LQFP64 package                  | `actuation/dshot.hpp`<br>`core/system_init.cpp`                    | Moved to **USART6 / PC6** |
 
 ---
 
 ## Estimator Improvements
 
-| # | What changed | File | Marker |
-|---|---|---|---|
-| 2 | Exact Φ=expm(F·dt) via Taylor expansion | `estimation/ekf.cpp` → `vanLoan()` | `/* Improvement #2 */` |
-| 3 | Exact Q_d via Gauss-Legendre quadrature | `estimation/ekf.cpp` → `vanLoan()` | `/* Improvement #3 */` |
-| 4 | Quaternion injection via exp-map (not small-angle) | `estimation/ekf.cpp` → `injectCorrection()` | `/* Improvement #4 */` |
-| 5 | Full δθ̇ = −\[ω\]×δθ − δb_g in F matrix | `estimation/ekf.cpp` → `buildF()` | `/* Improvement #5 */` |
-| 6 | Gauss-Markov bias model (τ_g, τ_a decay) | `estimation/ekf.cpp` → `buildF()` | `/* Improvement #6 */` |
-| 7 | IMU preintegration (ΔR,Δv,Δp) between EKF steps | `estimation/ekf.cpp` → `accumulateIMU()` | `/* Improvement #7 */` |
-| 8 | Exact quaternion integration via exp-map | `math/quaternion.hpp` → `integrateBodyRate()` | `/* Improvement #8 */` |
-| 9 | 3D vector mag update (cross-product innovation) | `estimation/mahony_ahrs.cpp`, `estimation/ekf.cpp` | `/* Improvement #9 */` |
-| 10 | Continuous accel weighting w=exp(−(‖a‖−g)²/σ²) | `estimation/mahony_ahrs.cpp` → `updateIMU()` | `/* Improvement #10 */` |
-| 11 | NIS innovation gating (χ² test) | `estimation/ekf.cpp` → `kalmanUpdate()` | `/* Improvement #11 */` |
-| 12 | Adaptive R (GPS: hDOP+sats; baro: vibe; mag: field) | `estimation/ekf.cpp` → update methods | `/* Improvement #12 */` |
-| 13 | Post-injection covariance reset P←G·P·Gᵀ | `estimation/ekf.cpp` → `resetCovariance()` | `/* Improvement #13 */` |
+| #  | Improvement                                                                  | File / Location                                        | Marker                  |
+|----|------------------------------------------------------------------------------|--------------------------------------------------------|-------------------------|
+| 2  | Exact state transition matrix, Φ = expm(F·dt), using Taylor expansion        | `estimation/ekf.cpp` → `vanLoan()`                     | `/* Improvement #2 */`  |
+| 3  | Exact discrete process noise, Q<sub>d</sub>, via Gauss–Legendre quadrature   | `estimation/ekf.cpp` → `vanLoan()`                     | `/* Improvement #3 */`  |
+| 4  | Quaternion error injection using the exponential map                         | `estimation/ekf.cpp` → `injectCorrection()`            | `/* Improvement #4 */`  |
+| 5  | Full attitude error dynamics, δθ̇ = −[ω]×δθ − δb<sub>g</sub>, in the F matrix | `estimation/ekf.cpp` → `buildF()`                      | `/* Improvement #5 */`  |
+| 6  | First-order Gauss–Markov gyro and accelerometer bias model                   | `estimation/ekf.cpp` → `buildF()`                      | `/* Improvement #6 */`  |
+| 7  | IMU preintegration (ΔR, Δv, Δp) between EKF prediction steps                 | `estimation/ekf.cpp` → `accumulateIMU()`               | `/* Improvement #7 */`  |
+| 8  | Exact quaternion integration using the exponential map                       | `math/quaternion.hpp` → `integrateBodyRate()`          | `/* Improvement #8 */`  |
+| 9  | Full 3D magnetometer update using cross-product innovation                   | `estimation/mahony_ahrs.cpp`<br>`estimation/ekf.cpp`   | `/* Improvement #9 */`  |
+| 10 | Continuous accelerometer confidence weighting, w = exp(−(||a||−g)²/σ²)       | `estimation/mahony_ahrs.cpp` → `updateIMU()`           | `/* Improvement #10 */` |
+| 11 | Normalised Innovation Squared (NIS) gating using a χ² consistency test       | `estimation/ekf.cpp` → `kalmanUpdate()`                | `/* Improvement #11 */` |
+| 12 | Adaptive measurement covariance (GPS, barometer, magnetometer)               | `estimation/ekf.cpp` → Update methods                  | `/* Improvement #12 */` |
+| 13 | Covariance reset after error-state injection, P ← G·P·Gᵀ                     | `estimation/ekf.cpp` → `resetCovariance()`             | `/* Improvement #13 */` |
 
 ---
 

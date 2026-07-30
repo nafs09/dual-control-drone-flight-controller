@@ -1,3 +1,4 @@
+
 #pragma once
 #include <stdint.h>
 #include "../math/vector3.hpp"
