@@ -10,7 +10,7 @@ Unlike hobby flight controllers built on an existing autopilot framework, this p
 
 ## System Architecture
 
-The diagram shows the intended data flow. Solid links are active source paths; dotted links indicate update hooks whose physical driver or application layer is not finished.
+Solid links show active source paths. Dotted links mark pending sensor hooks or included modules that are not connected to the runtime path.
 
 ```mermaid
 flowchart LR
@@ -24,7 +24,7 @@ flowchart LR
 
   subgraph E["State estimation"]
     INV["InvEKF<br/>15-state, active"]
-    ES["ES-EKF<br/>24-state, separate library"]
+    MAHONY["Mahony AHRS<br/>source module, not scheduled"]
   end
 
   subgraph C["Flight control"]
@@ -42,6 +42,7 @@ flowchart LR
   end
 
   IMU --> INV
+  IMU -. "module present, not scheduled" .-> MAHONY
   GPS --> INV
   BARO -. "shared-state update hook" .-> INV
   MAG -. "shared-state update hook" .-> INV
@@ -60,9 +61,20 @@ flowchart LR
   RATE --> MIX
   MIX --> DSHOT
   DSHOT --> MOTORS
+
+  classDef sensors fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
+  classDef estimate fill:#059669,color:#fff,stroke:#34d399,stroke-width:2px
+  classDef inactive fill:#475569,color:#fff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
+  classDef control fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
+  classDef output fill:#ea580c,color:#fff,stroke:#fdba74,stroke-width:2px
+  class IMU,GPS,RC sensors
+  class BARO,MAG,MAHONY inactive
+  class INV estimate
+  class FSM,POS,VEL,ATT,RATE control
+  class MIX,DSHOT,MOTORS output
 ```
 
-The default v1.1 estimator is InvEKF. ES-EKF is maintained as a separate estimator implementation. The Mahony AHRS files remain in the source tree, but Mahony is not the active v1.1 attitude source.
+The v1.1 system loop runs InvEKF for attitude and navigation. The Mahony AHRS implementation is also present in the source tree, but startup does not schedule it or route its output into the control loop.
 
 ---
 
@@ -99,6 +111,13 @@ flowchart LR
   MIX --> DSHOT
   DSHOT --> PLANT
 
+  classDef ctrl fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
+  classDef actuation fill:#ea580c,color:#fff,stroke:#fdba74,stroke-width:2px
+  classDef aircraft fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
+  class PILOT,POS,VEL,ATT,RATE ctrl
+  class MIX,DSHOT actuation
+  class PLANT aircraft
+
   PLANT -. "NED position and velocity" .-> POS
   PLANT -. "attitude and body rates" .-> ATT
   PLANT -. "body rates" .-> RATE
@@ -113,7 +132,7 @@ flowchart LR
 
 ### State estimation
 
-The active v1.1 estimation path is summarized below. Dashed measurement paths depend on hardware drivers that are not present yet.
+The active v1.1 estimation path is summarized below. Dotted paths show pending sensor inputs or source modules that are not scheduled.
 
 ```mermaid
 flowchart LR
@@ -122,20 +141,28 @@ flowchart LR
   BARO["Barometer<br/>driver pending"]
   MAG["Magnetometer<br/>driver pending"]
   INV["InvEKF<br/>15-state, active"]
-  ES["ES-EKF<br/>24-state, separate"]
+  MAHONY["Mahony AHRS<br/>source module, not scheduled"]
   STATE["NED position, velocity,<br/>body-to-NED attitude"]
   CTRL["Flight controllers"]
 
   IMU --> INV
+  IMU -. "module present, not scheduled" .-> MAHONY
   GPS --> INV
   BARO -. "update hook" .-> INV
   MAG -. "update hook" .-> INV
   INV --> STATE
   STATE --> CTRL
-  IMU -. "also available to library" .-> ES
+  classDef sensors fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
+  classDef estimate fill:#059669,color:#fff,stroke:#34d399,stroke-width:2px
+  classDef inactive fill:#475569,color:#fff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
+  classDef control fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
+  class IMU,GPS sensors
+  class BARO,MAG,MAHONY inactive
+  class INV,STATE estimate
+  class CTRL control
 ```
-- **InvEKF:** 15-state right-invariant navigation filter, selected by the v1.1 control loop.
-- **ES-EKF:** corrected 24-state error-state filter, retained as a separate implementation.
+- **InvEKF:** 15-state right-invariant navigation filter, selected by the v1.1 system loop for attitude and navigation.
+- **Mahony AHRS:** source module is present for high-rate attitude estimation; it is not currently scheduled or connected to the v1.1 control loop.
 - High-rate nominal inertial propagation with decimated covariance prediction.
 - UBX NAV-PVT GPS parser and local NED position/velocity update path.
 - Barometer and magnetometer update methods and shared-state hooks; physical drivers and calibration are pending.
@@ -155,7 +182,7 @@ The firmware is under drone_fc/:
 
 - src/core/ — shared state, RTOS tasks, system startup, and callbacks.
 - src/math/ — vector and quaternion math.
-- src/estimation/ — InvEKF, ES-EKF, and retained Mahony implementation.
+- src/estimation/ — active InvEKF navigation filter and Mahony AHRS source module.
 - src/drivers/ — LSM6DSV IMU driver and startup-calibration helper.
 - src/control/ — PID, rate, attitude, velocity, position, and future controller interface.
 - src/flight_modes/ — flight-mode state machine.
@@ -170,7 +197,7 @@ The firmware is under drone_fc/:
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System data flow, scheduling, and subsystem implementation status |
 | [Flight-controller setup](drone_fc/README.md) | Runtime rates, integration steps, and remaining hardware work |
-| [Control and estimator reference](drone_fc/process.md) | Frames, loop equations, estimator paths, and validation order |
+| [Control and estimator reference](drone_fc/process.md) | Frames, loop equations, estimator architecture, and validation order |
 | [Pin allocation](drone_fc/src/pins.md) | Intended pin map and unresolved board conflicts |
 | [NMPC-RTI scaffold](drone_fc/src/control/future/README.md) | Scope and requirements for future solver integration |
 
@@ -197,7 +224,7 @@ The intended pin assignment is summarized in [pins.md](drone_fc/src/pins.md). Ch
 - [x] IMU driver source
 - [x] CRSF parser and receiver timeout
 - [x] Cascaded PID controller and flight-mode FSM
-- [x] InvEKF and corrected ES-EKF implementations
+- [x] InvEKF and Mahony AHRS source modules
 - [x] UBX NAV-PVT parser and GPS fusion path
 - [x] DShot command and mixer source
 - [x] HIL/SIL state hooks

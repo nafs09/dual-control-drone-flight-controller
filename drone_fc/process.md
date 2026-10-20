@@ -28,17 +28,17 @@ The attitude error sent to the body-rate loop is q_current conjugate multiplied 
 
 These are nominal rates from the source. They require confirmation on the configured MCU project and hardware.
 
-## 3. Estimator paths
+## 3. Estimation architecture
 
 ### InvEKF (v1.1 active path)
 
 The right-invariant estimator uses 15 error coordinates: attitude, velocity, position, gyro bias, and accelerometer bias (three each). The nominal state propagates at IMU rate. Covariance propagation is decimated to about 480 Hz, and gravity, GPS, barometer, and magnetometer updates are exposed with innovation gating and covariance reset.
 
-The v1.1 system loop selects InvEKF. GPS updates arrive from the UBX NAV-PVT path. Barometer and magnetometer update methods are called only when their shared-state input is marked valid; this source tree does not contain the sensor drivers that would provide those physical samples.
+The v1.1 system loop selects InvEKF for attitude and navigation. GPS updates arrive from the UBX NAV-PVT path. Barometer and magnetometer update methods are called only when their shared-state input is marked valid; this source tree does not contain the sensor drivers that would provide those physical samples.
 
-### ES-EKF
+### Mahony AHRS
 
-The corrected 24-state ES-EKF remains available as a distinct estimator implementation. It is not selected by the v1.1 system loop. Its preintegration, covariance propagation and update math are separate from InvEKF.
+The source tree includes a Mahony AHRS module for high-rate attitude estimation. It is not currently instantiated or scheduled by system startup, and its output is not connected to the active control path. InvEKF is the estimator currently providing attitude and navigation to the v1.1 system loop.
 
 ## 4. Control cascade
 
@@ -104,6 +104,6 @@ There is no included target project, automated test suite, or flight log data in
 
 ## 11. Integration status
 
-Implemented in source: IMU driver, CRSF input parser, UBX NAV-PVT parser and GPS update path, InvEKF and ES-EKF libraries, cascaded PID control, FSM/safety hooks, mixer, DShot output interface, and HIL/SIL state hooks.
+Implemented in source: IMU driver, CRSF input parser, UBX NAV-PVT parser and GPS update path, InvEKF and Mahony AHRS modules, cascaded PID control, FSM/safety hooks, mixer, DShot output interface, and HIL/SIL state hooks.
 
 Incomplete or awaiting hardware integration: CubeMX/HAL project, MS5611 and QMC5883L drivers, sensor calibration, MAVLink messages, FatFS logging, current measurement, startup calibration call site, validated DShot telemetry conversion, return-to-home, and target-specific tuning.

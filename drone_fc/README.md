@@ -4,7 +4,7 @@
 
 This folder contains the Drone OS v1.1 flight-controller sources for the STM32F722RET6. The source package does not include the generated STM32Cube project, HAL/CMSIS-RTOS implementation, linker script, startup code, or a build system. Peripheral pin macros describe the intended board allocation; they do not configure the hardware by themselves.
 
-The primary estimator is the 15-state right-invariant navigation EKF in src/estimation/invariant_ekf.*. The corrected 24-state ES-EKF in src/estimation/ekf.* remains a separate implementation and is not selected by the v1.1 control loop. Mahony AHRS source is retained but is not the active v1.1 attitude source.
+The active estimator is the 15-state right-invariant InvEKF in src/estimation/invariant_ekf.*; the v1.1 system loop uses it for attitude and navigation. A Mahony AHRS module is also present in src/estimation/mahony_ahrs.*, but it is not currently instantiated or scheduled by system startup and its output is not connected to the control loop.
 
 This is a development source tree, not flight-ready firmware. The barometer and magnetometer hardware drivers, MAVLink serialization, SD/FatFS logging, current measurement, startup-calibration call site, DShot telemetry scale validation, and board-level configuration remain unfinished.
 

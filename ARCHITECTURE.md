@@ -4,7 +4,7 @@ This document describes the Drone OS v1.1 source layout and runtime data flow. T
 
 ## System data flow
 
-Solid arrows identify implemented source paths. Dotted arrows are shared-state hooks awaiting physical sensor drivers or application code.
+Solid arrows identify active runtime paths. Dotted arrows mark pending sensor inputs or source modules that are not scheduled.
 
 ```mermaid
 flowchart LR
@@ -18,7 +18,7 @@ flowchart LR
 
   subgraph Estimation["Navigation estimation"]
     INV["15-state InvEKF<br/>active in v1.1"]
-    ES["24-state ES-EKF<br/>separate implementation"]
+    MAHONY["Mahony AHRS<br/>source module, not scheduled"]
   end
 
   subgraph Control["Flight mode and control"]
@@ -36,6 +36,7 @@ flowchart LR
   end
 
   IMU --> INV
+  IMU -. "module present, not scheduled" .-> MAHONY
   GPS --> INV
   BARO -. "valid shared-state sample required" .-> INV
   MAG -. "valid calibrated sample required" .-> INV
@@ -54,9 +55,21 @@ flowchart LR
   RATE --> MIX
   MIX --> DSHOT
   DSHOT --> ESC
+
+  classDef sensors fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
+  classDef estimate fill:#059669,color:#fff,stroke:#34d399,stroke-width:2px
+  classDef inactive fill:#475569,color:#fff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
+  classDef control fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
+  classDef output fill:#ea580c,color:#fff,stroke:#fdba74,stroke-width:2px
+  class IMU,GPS,RC sensors
+  class BARO,MAG inactive
+  class INV estimate
+  class MAHONY inactive
+  class FSM,POS,VEL,ATT,RATE control
+  class MIX,DSHOT,ESC output
 ```
 
-ES-EKF and Mahony source are retained, but the v1.1 control loop uses InvEKF for navigation and attitude. The NMPC-RTI scaffold is intentionally outside this active path.
+The v1.1 system loop runs InvEKF for navigation and attitude. Mahony AHRS source is present, but startup does not schedule it or route its output into the control loop. The NMPC-RTI scaffold is intentionally outside this active path.
 
 ## Source organization
 
@@ -64,7 +77,7 @@ ES-EKF and Mahony source are retained, but the v1.1 control loop uses InvEKF for
 |---|---|
 | src/core/ | Shared state, RTOS tasks, peripheral callbacks, startup |
 | src/math/ | Fixed-size vectors and quaternion operations |
-| src/estimation/ | InvEKF, ES-EKF, and retained Mahony AHRS source |
+| src/estimation/ | Active InvEKF navigation filter and Mahony AHRS source module |
 | src/drivers/ | LSM6DSV IMU and startup calibration helper |
 | src/communication/ | CRSF receiver parser and UBX NAV-PVT parser |
 | src/control/ | PID cascade and future NMPC-RTI interface |
@@ -99,7 +112,7 @@ InvEKF is a 15-state right-invariant navigation filter with attitude, velocity, 
 
 The estimator API also supports barometer and magnetometer observations. The corresponding tasks currently consume valid samples from shared state; physical sampling, scaling, magnetometer calibration, and local magnetic reference setup are unfinished.
 
-The 24-state ES-EKF has been repaired and remains a separate estimator library. It is not selected by the v1.1 system startup path. Mahony AHRS sources remain in the tree but are not the active v1.1 attitude source.
+The Mahony AHRS implementation is included as a high-rate attitude-estimation module. It is not currently instantiated or scheduled by system startup, so the active controller receives attitude from InvEKF.
 
 ## Flight-control paths
 
