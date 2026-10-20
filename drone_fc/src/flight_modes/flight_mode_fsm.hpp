@@ -7,7 +7,7 @@
 #include "../control/velocity_controller.hpp"
 #include "../actuation/mixer.hpp"
 #include "../estimation/mahony_ahrs.hpp"
-#include "../estimation/ekf.hpp"
+#include "../estimation/invariant_ekf.hpp"
 
 namespace FC { namespace FlightModes {
 
@@ -59,17 +59,16 @@ public:
     /**
      * @brief  Main update at IMU rate (~3840 Hz).
      * @param dt       True elapsed time since last call [s].
-     * @param ahrs     Mahony AHRS.
-     * @param ekf      EKF (position/velocity source).
+     * @param ekf      Invariant navigation EKF.
      */
-    void update(float dt, MahonyAHRS& ahrs, EKF& ekf);
+    void update(float dt, InvEKF& ekf);
 
     /**
      * @brief  Slower update at ~50 Hz for position loop.
      * @param dt   ~20 ms step.
-     * @param ekf  EKF (position/velocity source).
+     * @param ekf  Invariant navigation EKF.
      */
-    void updatePositionLoop(float dt, const EKF& ekf);
+    void updatePositionLoop(float dt, const InvEKF& ekf);
 
     FlightMode getMode()  const { return g_state.mode; }
     ArmState   getArm()   const { return g_state.armState; }
@@ -117,8 +116,10 @@ private:
     FlightMode prevMode_    = FlightMode::DISARMED;
     uint32_t   modeEntryMs_ = 0;
     float      landingThrottle_ = 0.3f;
-    uint32_t   armHoldMs_  = 0;
+    uint32_t   armHoldStartTick_ = 0;
+    bool       armHoldActive_ = false;
     float      fsDescentRate_ = 0.f;
+    bool       positionHoldActive_ = false;
 
     static constexpr uint32_t kArmHoldMs = 500u;
     static constexpr float    kFsDescentRps = 0.5f;

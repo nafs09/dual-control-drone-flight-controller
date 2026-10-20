@@ -508,16 +508,19 @@ At lower IMU rates (1000 Hz, common in older controllers), the D term must
 be filtered more aggressively, which introduces phase lag and reduces the
 maximum stable D gain.
 
-### Why Mahony AHRS + EKF, not just EKF?
+### Version 1.1 estimator choice
 
-The EKF at 480 Hz is not fast enough to propagate the attitude estimate for the
-3840 Hz rate loop. The Mahony filter (computationally trivial at 3840 Hz) provides
-the fast attitude estimate. The EKF runs slower but provides accurate position,
-velocity, and bias estimates. The Mahony gyro bias is continuously corrected by
-the EKF bias output.
+Version 1.1 uses a right-invariant navigation EKF (`InvEKF`). Its nominal
+attitude, velocity, and position propagate at the IMU sample rate; the covariance
+propagates every eight samples. A confidence-weighted accelerometer gravity
+update runs at 100 Hz. GPS, barometer, and magnetometer update methods are
+available, but the sensor tasks that feed them are still hardware-integration
+work and are not active in this source tree.
 
-This combination is the same architecture used in the open-source InvenSense ICM
-fusion library and similar to PX4's attitude estimator design.
+The 24-state ES-EKF remains available as a separate estimator. It can consume an
+external high-rate AHRS attitude reference while retaining its own measurement
+corrections. Neither estimator has been validated against flight logs or target
+hardware in this repository.
 
 ---
 
@@ -525,9 +528,9 @@ fusion library and similar to PX4's attitude estimator design.
 
 | Variable       | Symbol        | Frame / Convention      | Source                 | Update Rate |
 |----------------|---------------|-------------------------|------------------------|-------------|
-| Position       | **p**         | NED (m)                 | EKF                    | **480 Hz**  |
-| Velocity       | **v**         | NED (m/s)               | EKF                    | **480 Hz**  |
-| Attitude       | **q**         | Quaternion (Body → NED) | Mahony AHRS            | **3840 Hz** |
+| Position       | **p**         | NED (m)                 | InvEKF                 | **3840 Hz** |
+| Velocity       | **v**         | NED (m/s)               | InvEKF                 | **3840 Hz** |
+| Attitude       | **q**         | Quaternion (Body → NED) | InvEKF                 | **3840 Hz** |
 | Euler Angles   | **(φ, θ, ψ)** | ZYX (rad)               | Derived from **q**     | **3840 Hz** |
 | Angular Rate   | **ω**         | Body FRD (rad/s)        | IMU (bias corrected)   | **3840 Hz** |
 | Gyro Bias      | **b_g**       | Body (rad/s)            | EKF                    | **480 Hz**  |

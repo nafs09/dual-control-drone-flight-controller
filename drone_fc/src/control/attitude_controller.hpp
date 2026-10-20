@@ -28,11 +28,13 @@ public:
 
     void setGains(const Gains& g){g_=g;}
 
-    /** Compute rate setpoint from quaternion attitude error.
-     *  q_err = q_desired ⊗ q_current⁻¹
-     *  rate_sp = 2 × Kp × q_err.xyz   (shortest-path, bounded to rate limits) */
+    /** Compute body-frame rate setpoint from the quaternion attitude error.
+     *  q_err = q_current⁻¹ ⊗ q_desired, so q_err.xyz and the gyro share the
+     *  body frame. The world-frame error q_desired*q_current⁻¹ cannot be fed
+     *  directly to the body-rate controller when the vehicle is yawed. */
     Vector3f update(const Quaternionf& q_desired, const Quaternionf& q_current){
-        Quaternionf e=Quaternionf::attitudeError(q_desired,q_current);
+        Quaternionf e=q_current.conjugate()*q_desired;
+        if(e.w<0.f){e.w=-e.w;e.x=-e.x;e.y=-e.y;e.z=-e.z;}
         auto cl=[](float v,float l){return v>l?l:(v<-l?-l:v);};
         return {
             cl(2.f*g_.kp_roll *e.x, g_.rate_max_roll_rps),

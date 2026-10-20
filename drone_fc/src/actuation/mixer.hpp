@@ -114,27 +114,27 @@ public:
 
         float ts = cfg_.torqueScale * static_cast<float>(cfg_.dshotMax - cfg_.dshotIdle);
 
-        /* X-frame mixing */
+        /* X-frame torque offsets. Scale them uniformly into the available
+         * headroom so desaturating one side cannot push the opposite side
+         * back through the other limit. Collective remains unchanged. */
+        float offset[4];
+        offset[0] = (-torque.x - torque.y + torque.z) * ts;
+        offset[1] = ( torque.x - torque.y - torque.z) * ts;
+        offset[2] = ( torque.x + torque.y + torque.z) * ts;
+        offset[3] = (-torque.x + torque.y - torque.z) * ts;
+        float maxAbs = 0.f;
+        for (int i=0;i<4;i++) maxAbs=fmaxf(maxAbs, fabsf(offset[i]));
+        const float headroom=fmaxf(0.f, fminf(base-cfg_.dshotIdle,
+                                               cfg_.dshotMax-base));
+        const float scale=(maxAbs>headroom && maxAbs>0.f)?headroom/maxAbs:1.f;
         float m[4];
-        m[0] = base + (-torque.x - torque.y + torque.z) * ts;
-        m[1] = base + ( torque.x - torque.y - torque.z) * ts;
-        m[2] = base + ( torque.x + torque.y + torque.z) * ts;
-        m[3] = base + (-torque.x + torque.y - torque.z) * ts;
-
-        /* Desaturation: find how much we exceed the limits */
-        float maxOver = 0.f, maxUnder = 0.f;
-        for (int i=0;i<4;i++) {
-            if (m[i] > cfg_.dshotMax)  maxOver  = fmaxf(maxOver,  m[i] - cfg_.dshotMax);
-            if (m[i] < cfg_.dshotIdle) maxUnder = fmaxf(maxUnder, cfg_.dshotIdle - m[i]);
-        }
-        if (maxOver  > 0.f) for (int i=0;i<4;i++) m[i] -= maxOver;
-        if (maxUnder > 0.f) for (int i=0;i<4;i++) m[i] += maxUnder;
+        for (int i=0;i<4;i++) m[i]=base+scale*offset[i];
 
         /* Hard clamp and convert */
         for (int i=0;i<4;i++) {
             float v = m[i];
             if (v > cfg_.dshotMax)  v = cfg_.dshotMax;
-            if (v < cfg_.dshotMin)  v = cfg_.dshotMin;
+            if (v < cfg_.dshotIdle) v = cfg_.dshotIdle;
             cmds[i] = static_cast<uint16_t>(v);
         }
     }

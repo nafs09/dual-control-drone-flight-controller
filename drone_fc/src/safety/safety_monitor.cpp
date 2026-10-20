@@ -9,7 +9,7 @@ extern ADC_HandleTypeDef  hadc1;
 
 namespace FC { namespace Safety {
 
-void SafetyMonitor::init(){prevDrdyCount_=drdyStallMs_=0;battVoltFilt_=12.6f;originSet_=false;}
+void SafetyMonitor::init(){prevDrdyCount_=drdyStallMs_=0;battVoltFilt_=12.6f;wasArmed_=false;armedSinceTick_=0;}
 
 void SafetyMonitor::taskEntry(void* arg){
     SafetyMonitor* s=static_cast<SafetyMonitor*>(arg);
@@ -74,12 +74,11 @@ void SafetyMonitor::checkBattery(){
 void SafetyMonitor::checkGeofence(){
     /* BUG FIX #10: Original used raw lat/lon deltas (1° ≈ 111 km — wrong units).
      * Now uses EKF NED position in metres from the home origin. */
-    if(!g_state.gps.fixValid) return;
-    if(!originSet_&&g_state.armState==ArmState::ARMED){
-        g_state.origin={g_state.gps.lat_deg,g_state.gps.lon_deg,g_state.gps.alt_msl_m,true};
-        originSet_=true;
-    }
-    if(!originSet_) return;
+    osMutexAcquire(g_state.gpsMtx,osWaitForever);
+    const GPSData gps=g_state.gps;
+    const NavOrigin origin=g_state.origin;
+    osMutexRelease(g_state.gpsMtx);
+    if(!gps.fixValid || !origin.set) return;
     osMutexAcquire(g_state.navMtx,osWaitForever);
     Math::Vector3f p=g_state.position_ned;
     osMutexRelease(g_state.navMtx);
@@ -89,11 +88,17 @@ void SafetyMonitor::checkGeofence(){
 }
 
 void SafetyMonitor::checkMotorLoss(){
-    if(g_state.armState!=ArmState::ARMED) return;
-    osMutexAcquire(g_state.telemMtx,osWaitForever);
+    if(g_state.armState!=ArmState::ARMED){wasArmed_=false;return;}
+    const uint32_t now=osKernelGetTickCount();
+    if(!wasArmed_){wasArmed_=true;armedSinceTick_=now;}
+    const uint32_t elapsedMs=static_cast<uint32_t>(
+        (static_cast<uint64_t>(now-armedSinceTick_)*1000u)/osKernelGetTickFreq());
+    if(elapsedMs<500u) return; /* allow ESC telemetry to start after arming */
+    const uint32_t primask=__get_PRIMASK();
+    __disable_irq();
     int losses=0;
     for(int i=0;i<4;i++) if(!g_state.motorTelem[i].valid) losses++;
-    osMutexRelease(g_state.telemMtx);
+    __set_PRIMASK(primask);
     if(losses>=2) triggerMotorKill(FC_ERR_MOTOR_LOSS); /* 2+ motors silent → kill */
 }
 

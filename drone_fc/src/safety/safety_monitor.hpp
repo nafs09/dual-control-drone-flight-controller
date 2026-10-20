@@ -23,7 +23,8 @@ public:
 private:
     uint32_t prevDrdyCount_=0, drdyStallMs_=0;
     float    battVoltFilt_=12.6f;
-    bool     originSet_=false;
+    bool     wasArmed_=false;
+    uint32_t armedSinceTick_=0;
     static constexpr float kBattAlpha=0.05f;
 
     void checkIMU(uint32_t tick_ms);

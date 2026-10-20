@@ -7,7 +7,7 @@
 namespace FC { namespace Control {
 using Math::Vector3f;
 
-/** GPS position hold — outputs velocity setpoint fed to VelocityController.
+/** GPS position hold — outputs an NED velocity setpoint for the velocity loop.
  *  Runs at 50 Hz. Camera mode + GPS hold only. */
 class PositionController {
 public:
@@ -33,21 +33,15 @@ public:
     void captureSetpoint(const Vector3f& pos){setpoint_=pos;}
     void nudgeSetpoint(const Vector3f& d){setpoint_+=d;}
 
-    /** @param des_tilt_body  Output tilt (rol,pitch) for passing to attitude ctrl.
-     *  @param des_thrust     Altitude thrust delta. */
-    void update(const Vector3f& pos, const Vector3f& /*vel*/,
-                float yaw, float dt,
-                Vector3f& des_tilt_body, float& des_thrust)
+    /** Position error and measured NED velocity produce an NED velocity
+     * command. The derivative term uses measured velocity to avoid setpoint
+     * kick when hold position is captured or nudged. */
+    Vector3f update(const Vector3f& pos, const Vector3f& vel, float dt)
     {
-        float tN=northPID_.update(setpoint_.x,pos.x,dt)/9.80665f;
-        float tE=eastPID_ .update(setpoint_.y,pos.y,dt)/9.80665f;
-        float cy=cosf(yaw),sy=sinf(yaw);
-        float dr= cy*tE+sy*tN;
-        float dp=-sy*tE+cy*tN;
-        float mag=sqrtf(dr*dr+dp*dp);
-        if(mag>g_.max_tilt_rad){float s=g_.max_tilt_rad/mag;dr*=s;dp*=s;}
-        des_tilt_body={dr,dp,0};
-        des_thrust=altPID_.update(-setpoint_.z,-pos.z,dt);
+        const float north = northPID_.updateError(setpoint_.x - pos.x, -vel.x, dt);
+        const float east = eastPID_.updateError(setpoint_.y - pos.y, -vel.y, dt);
+        const float down = altPID_.updateError(setpoint_.z - pos.z, -vel.z, dt);
+        return {north, east, down}; /* down is positive in NED */
     }
 
     void reset(){northPID_.reset();eastPID_.reset();altPID_.reset();}

@@ -176,9 +176,10 @@ public:
         roll_rad  = clamp(roll_rad,  kMaxTilt);
 
         /* --- Vertical PID: vel_sp.z (NED down) → throttle delta ---
-         * NED down is positive, so positive z error = sinking → need more thrust.
-         * The vertical PID output sign: positive output = more thrust.          */
-        float thrust_delta = vertPID_.update(vel_sp.z, vel_meas.z, dt);
+         * NED down is positive. If measured descent exceeds the setpoint, the
+         * velocity error is negative and thrust must increase, hence the sign
+         * inversion from PID error to motor thrust. */
+        float thrust_delta = -vertPID_.update(vel_sp.z, vel_meas.z, dt);
 
         return { roll_rad, pitch_rad, thrust_delta };
     }

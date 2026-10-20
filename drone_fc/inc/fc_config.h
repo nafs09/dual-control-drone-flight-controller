@@ -314,6 +314,7 @@
 #define FC_ERR_MAG              0x40U
 #define FC_ERR_BARO             0x80U
 #define FC_ERR_MOTOR_LOSS       0x100U   /* Motor telemetry indicates failure */
+#define FC_ERR_GPS              0x200U
 
 /* ---------- RTOS stack sizes (words) ---------------------- */
 #define STACK_CTRL_LOOP         768

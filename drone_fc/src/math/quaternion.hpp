@@ -63,16 +63,11 @@ struct Quaternionf {
         float halfAngle = omega.norm() * 0.5f * dt;
         Quaternionf dq;
         if (halfAngle > 1e-6f) {
-            float s     = sinf(halfAngle) / (omega.norm() + 1e-30f);
+            const float s = sinf(halfAngle) / (omega.norm() + 1e-30f);
             dq.w = cosf(halfAngle);
-            dq.x = omega.x * s * dt * 0.5f / (halfAngle / (omega.norm() + 1e-30f) * dt * 0.5f) * s;
-            /* Cleaner: use the half-angle vector directly */
-            float ha = halfAngle;
-            float sa = sinf(ha) / (omega.norm() + 1e-30f);
-            dq.w = cosf(ha);
-            dq.x = omega.x * sa;
-            dq.y = omega.y * sa;
-            dq.z = omega.z * sa;
+            dq.x = omega.x * s;
+            dq.y = omega.y * s;
+            dq.z = omega.z * s;
         } else {
             /* Small angle: first-order is indistinguishable from exact */
             dq.w = 1.f;

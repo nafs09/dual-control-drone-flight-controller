@@ -2,6 +2,7 @@
 #include "crsf.hpp"
 #include "../core/shared_state.hpp"
 #include "cmsis_os.h"
+#include "stm32f7xx_hal.h"
 
 namespace FC { namespace Communication {
 
@@ -48,7 +49,9 @@ void CRSFParser::feedByte(uint8_t b){
             /* BUG FIX #2: validate CRC before accepting any frame */
             uint8_t calc=crc8dvbs2(&buf_[2],frameLen_-1u);
             uint8_t recv=buf_[frameLen_+1u];
-            if(calc==recv && buf_[2]==CRSF_FRAMETYPE_RC){
+            /* RC channels contain exactly 22 packed bytes. A short frame of
+             * the same type must never reach unpackChannels(). */
+            if(calc==recv && buf_[2]==CRSF_FRAMETYPE_RC && frameLen_==24u){
                 unpackChannels(&buf_[3]);
                 frameReady_=true;
                 msSinceLastFrame_=0; /* BUG FIX #3: reset failsafe timer */
@@ -81,21 +84,29 @@ void CRSFParser::unpackChannels(const uint8_t* p){
 }
 
 void CRSFParser::processFrame(bool fpvMode){
-    if(!frameReady_) return;
-    frameReady_=false;
+    uint16_t channels[NUM_CHANNELS];
+    const uint32_t primask=__get_PRIMASK();
+    __disable_irq();
+    const bool ready=frameReady_;
+    if(ready){
+        for(int i=0;i<NUM_CHANNELS;i++) channels[i]=raw_[i];
+        frameReady_=false;
+    }
+    __set_PRIMASK(primask);
+    if(!ready) return;
     /* BUG FIX #4: apply normalisation, deadband, expo — previously absent */
     float rExpo=fpvMode?FPV_ROLL_EXPO:CAM_ROLL_EXPO;
     float pExpo=fpvMode?FPV_PITCH_EXPO:CAM_PITCH_EXPO;
     float yExpo=fpvMode?FPV_YAW_EXPO:CAM_YAW_EXPO;
     float db=RC_DEADBAND;
 
-    float roll    =applyDeadbandExpo(normaliseChannel(raw_[RC_CH_ROLL]),   db,rExpo);
-    float pitch   =applyDeadbandExpo(normaliseChannel(raw_[RC_CH_PITCH]),  db,pExpo);
-    float yaw     =applyDeadbandExpo(normaliseChannel(raw_[RC_CH_YAW]),    db,yExpo);
-    float throttle=normaliseThrottle(raw_[RC_CH_THROTTLE]);
-    bool  arm =(raw_[RC_CH_ARM]     >SW_HIGH);
-    bool  mode=(raw_[RC_CH_MODE]    >SW_HIGH);
-    bool  alt =(raw_[RC_CH_ALT_HOLD]>SW_HIGH);
+    float roll    =applyDeadbandExpo(normaliseChannel(channels[RC_CH_ROLL]),   db,rExpo);
+    float pitch   =applyDeadbandExpo(normaliseChannel(channels[RC_CH_PITCH]),  db,pExpo);
+    float yaw     =applyDeadbandExpo(normaliseChannel(channels[RC_CH_YAW]),    db,yExpo);
+    float throttle=normaliseThrottle(channels[RC_CH_THROTTLE]);
+    bool  arm =(channels[RC_CH_ARM]     >SW_HIGH);
+    bool  mode=(channels[RC_CH_MODE]    >SW_HIGH);
+    bool  alt =(channels[RC_CH_ALT_HOLD]>SW_HIGH);
 
     osMutexAcquire(g_state.rcMtx,osWaitForever);
     g_state.rc={roll,pitch,yaw,throttle,arm,mode,alt,true,(uint32_t)osKernelGetTickCount()};
@@ -103,8 +114,12 @@ void CRSFParser::processFrame(bool fpvMode){
 }
 
 void CRSFParser::tick1ms(){
-    ++msSinceLastFrame_;
-    if(msSinceLastFrame_>kFailsafeMs){
+    const uint32_t primask=__get_PRIMASK();
+    __disable_irq();
+    if(msSinceLastFrame_<kFailsafeMs+1u) ++msSinceLastFrame_;
+    const bool timedOut=msSinceLastFrame_>kFailsafeMs;
+    __set_PRIMASK(primask);
+    if(timedOut){
         osMutexAcquire(g_state.rcMtx,osWaitForever);
         g_state.rc.valid=false;
         osMutexRelease(g_state.rcMtx);

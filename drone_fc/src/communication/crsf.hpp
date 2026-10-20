@@ -36,7 +36,8 @@ public:
         return n>1.f?1.f:(n<-1.f?-1.f:n);
     }
     static float normaliseThrottle(uint16_t raw){
-        float n=(float)(raw-CH_MIN)/(float)(CH_MAX-CH_MIN);
+        float n=(static_cast<float>(raw)-static_cast<float>(CH_MIN))/
+                static_cast<float>(CH_MAX-CH_MIN);
         return n>1.f?1.f:(n<0.f?0.f:n);
     }
     static float applyDeadbandExpo(float v,float db,float expo){

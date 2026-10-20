@@ -9,6 +9,17 @@ Supports seamless switching between **FPV/Acro** and **Cinematic Camera** flight
 For full control architecture explanation including the velocity controller, wind
 rejection math, and tuning procedure, see **[process.md](process.md)**.
 
+## Version 1.1 status
+
+Version 1.1 selects the 15-state right-invariant navigation EKF
+(`estimation/invariant_ekf.*`) and keeps the 24-state ES-EKF as a separately
+usable estimator. The v1.1 work also repairs the ES-EKF implementation and
+control-path issues documented below. Sensor-task integrations, telemetry,
+logging, and all hardware-dependent calibration work are still listed in
+**TODO (Next Steps)** and must be completed for a fully operational aircraft.
+The NMPC-RTI files under `control/future/` are an unconnected interface
+scaffold; they do not generate motor commands.
+
 ---
 
 ## Hardware
@@ -123,8 +134,9 @@ Pin 1 = bottom-left (notch). Numbering goes counterclockwise.
 │   ├── vector3.hpp          3D vector
 │   └── quaternion.hpp       Hamilton quaternion + exp-map
 ├── estimation/
-│   ├── mahony_ahrs.hpp/cpp  AHRS @ 3840 Hz (improvements #5,8,9,10)
-│   └── ekf.hpp/cpp          15-state ES-EKF (improvements #2-7,9,11-13)
+│   ├── invariant_ekf.hpp/cpp  15-state right-invariant navigation EKF (v1.1)
+│   ├── ekf.hpp/cpp            24-state ES-EKF (legacy / standalone)
+│   └── mahony_ahrs.hpp/cpp    Optional complementary AHRS
 ├── drivers/
 │   ├── lsm6dsv.hpp/cpp      LSM6DSV320XTR IMU
 │   └── startup_calibration.hpp  Pre-arm gyro bias
@@ -133,14 +145,16 @@ Pin 1 = bottom-left (notch). Numbering goes counterclockwise.
 │   ├── rate_controller.hpp  Inner loop @ 3840 Hz
 │   ├── attitude_controller.hpp  Quaternion attitude @ 3840 Hz
 │   ├── velocity_controller.hpp  Velocity + wind rejection @ 100 Hz  ← NEW
-│   └── position_controller.hpp  GPS position hold @ 50 Hz
+│   ├── position_controller.hpp  GPS position hold @ 50 Hz
+│   └── future/nmpc_rti.hpp      NMPC-RTI backend interface scaffold
 ├── actuation/
 │   ├── dshot.hpp/cpp        Bidir DSHOT300 UART half-duplex
 │   └── mixer.hpp            X-frame mixer + thrust linearisation
 ├── flight_modes/
 │   └── flight_mode_fsm.hpp/cpp  FSM with full cascaded camera path
 ├── communication/
-│   └── crsf.hpp/cpp         CRSF/ELRS parser
+│   ├── crsf.hpp/cpp         CRSF/ELRS parser
+│   └── ubx_parser.hpp/cpp   UBX NAV-PVT parser
 ├── safety/
 │   └── safety_monitor.hpp/cpp   100 Hz watchdog
 └── simulation/
@@ -159,7 +173,7 @@ CAMERA MODE:
   vel setpoint [m/s, NED]
         ↓  100 Hz VelocityController   ← wind rejection, smooth braking
   tilt [roll, pitch, rad]
-        ↓  3840 Hz AttitudeController  (q_err = q_des ⊗ q⁻¹)
+        ↓  3840 Hz AttitudeController  (body-frame q_err = q⁻¹ ⊗ q_des)
   rate setpoint [rad/s]
         ↓  3840 Hz RateController      (3× independent PIDs)
   torque [-1..+1]
@@ -213,12 +227,12 @@ FPV MODE:  RC sticks → rate setpoint → RateController → Mixer
 
 | #  | Improvement                                                                  | File / Location                                        | Marker                  |
 |----|------------------------------------------------------------------------------|--------------------------------------------------------|-------------------------|
-| 2  | Exact state transition matrix, Φ = expm(F·dt), using Taylor expansion        | `estimation/ekf.cpp` → `vanLoan()`                     | `/* Improvement #2 */`  |
-| 3  | Exact discrete process noise, Q<sub>d</sub>, via Gauss–Legendre quadrature   | `estimation/ekf.cpp` → `vanLoan()`                     | `/* Improvement #3 */`  |
+| 2  | Third-order state transition approximation using Taylor expansion            | `estimation/ekf.cpp` → `discretise()`                   | `/* Improvement #2 */`  |
+| 3  | Discrete process noise via two-node Gauss–Legendre quadrature                  | `estimation/ekf.cpp` → `discretise()`                   | `/* Improvement #3 */`  |
 | 4  | Quaternion error injection using the exponential map                         | `estimation/ekf.cpp` → `injectCorrection()`            | `/* Improvement #4 */`  |
 | 5  | Full attitude error dynamics, δθ̇ = −[ω]×δθ − δb<sub>g</sub>, in the F matrix | `estimation/ekf.cpp` → `buildF()`                      | `/* Improvement #5 */`  |
 | 6  | First-order Gauss–Markov gyro and accelerometer bias model                   | `estimation/ekf.cpp` → `buildF()`                      | `/* Improvement #6 */`  |
-| 7  | IMU preintegration (ΔR, Δv, Δp) between EKF prediction steps                 | `estimation/ekf.cpp` → `accumulateIMU()`               | `/* Improvement #7 */`  |
+| 7  | Accumulated Δv/Δp and average IMU inputs between covariance steps             | `estimation/ekf.cpp` → `accumulateIMU()`               | `/* Improvement #7 */`  |
 | 8  | Exact quaternion integration using the exponential map                       | `math/quaternion.hpp` → `integrateBodyRate()`          | `/* Improvement #8 */`  |
 | 9  | Full 3D magnetometer update using cross-product innovation                   | `estimation/mahony_ahrs.cpp`<br>`estimation/ekf.cpp`   | `/* Improvement #9 */`  |
 | 10 | Continuous accelerometer confidence weighting, w = exp(−(||a||−g)²/σ²)       | `estimation/mahony_ahrs.cpp` → `updateIMU()`           | `/* Improvement #10 */` |
@@ -232,7 +246,7 @@ FPV MODE:  RC sticks → rate setpoint → RateController → Mixer
 
 ### Serial peripherals
 
-- [ ] **USART1** 115200 baud, async, PA9 TX, PA10 RX — GPS
+- [ ] **USART1** 115200 baud, async, PA9 TX, PA10 RX, RX interrupt — GPS
 - [ ] **USART2** 420000 baud, async, PA2 TX, PA3 RX, RX interrupt — CRSF
 - [ ] **USART3** 3000000 baud, half-duplex, PB10, TX+RX inverted, DMA TX+RX — Motor 3
 - [ ] **UART4**  3000000 baud, half-duplex, PA0,  TX+RX inverted, DMA TX+RX — Motor 1
@@ -299,7 +313,6 @@ For each ESC (BLHeli_32 or AM32):
 
 - [ ] MS5611 barometer driver (`drivers/ms5611.hpp/.cpp`)
 - [ ] QMC5883L magnetometer driver (`drivers/qmc5883l.hpp/.cpp`)
-- [ ] GPS UBX parser — NAV-PVT (`communication/ubx_parser.hpp/.cpp`)
 - [ ] MAVLink frame builder (`communication/mavlink_task.cpp` → `CDC_Transmit_FS`)
 - [ ] SD card logger via FatFS (`logging/sd_logger.hpp/.cpp`)
 - [ ] USB-CDC CLI for in-field PID tuning
