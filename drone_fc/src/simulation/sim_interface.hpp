@@ -29,7 +29,8 @@ public:
     static void injectSensors(const SensorIn& s){
         if(mode==Mode::HARDWARE) return;
         osMutexAcquire(g_state.imuMtx,osWaitForever);
-        g_state.gyro_rps  ={s.gyro_rps[0],s.gyro_rps[1],s.gyro_rps[2]};
+        g_state.gyro_raw_rps={s.gyro_rps[0],s.gyro_rps[1],s.gyro_rps[2]};
+        g_state.gyro_rps=g_state.gyro_raw_rps;
         g_state.accel_mps2={s.accel_mps2[0],s.accel_mps2[1],s.accel_mps2[2]};
         osMutexRelease(g_state.imuMtx);
         osMutexAcquire(g_state.baroMtx,osWaitForever);
@@ -39,11 +40,13 @@ public:
         ++g_state.baroGeneration;
         osMutexRelease(g_state.baroMtx);
         osMutexAcquire(g_state.magMtx,osWaitForever);
-        g_state.mag_normalised={s.mag_norm[0],s.mag_norm[1],s.mag_norm[2]};
+        const Vector3f magUnit={s.mag_norm[0],s.mag_norm[1],s.mag_norm[2]};
         Quaternionf qTrue(s.q_true[0],s.q_true[1],s.q_true[2],s.q_true[3]);
         qTrue.normalise();
-        g_state.mag_reference_ned=qTrue.rotate(g_state.mag_normalised).normalised();
-        g_state.magValid=g_state.mag_normalised.norm()>1.0e-4f;
+        constexpr float kSimFieldStrength_uT = 50.0f;
+        g_state.mag_body_uT=magUnit*kSimFieldStrength_uT;
+        g_state.mag_reference_ned_uT=qTrue.rotate(magUnit).normalised()*kSimFieldStrength_uT;
+        g_state.magValid=magUnit.norm()>1.0e-4f;
         ++g_state.magGeneration;
         osMutexRelease(g_state.magMtx);
         osMutexAcquire(g_state.gpsMtx,osWaitForever);

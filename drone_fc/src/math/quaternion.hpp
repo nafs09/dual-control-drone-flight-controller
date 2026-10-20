@@ -84,7 +84,7 @@ struct Quaternionf {
      *
      *   exp(u) = [cos(|u|), û·sin(|u|)]
      *
-     * Used by EKF to inject the attitude error state δθ into
+     * Used by InvEKF to inject the attitude error state δθ into
      * the nominal quaternion without the small-angle approximation.
      * ------------------------------------------------------- */
     static Quaternionf expMap(const Vector3f& u) {

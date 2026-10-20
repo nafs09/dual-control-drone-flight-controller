@@ -9,7 +9,7 @@ namespace FC { namespace Safety {
  *
  * BUG FIX #10: GPS fence used raw lat/lon degree deltas.
  *   1° latitude ≈ 111 km so the fence was meaningless.
- *   Fixed: uses EKF NED position (metres from home). See checkGeofence().
+ *   Uses InvEKF NED position (metres from home). See checkGeofence().
  *
  * BUG FIX #11: Original safety.c called while(1) on sensor fault.
  *   No reporting, no recovery, no watchdog feed. Replaced with

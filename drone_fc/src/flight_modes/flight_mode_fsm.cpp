@@ -298,7 +298,8 @@ void FlightModeFSM::tryArm() {
     osMutexRelease(g_state.rcMtx);
 
     osMutexAcquire(g_state.safetyMtx, osWaitForever);
-    bool noFault = !(g_state.errorFlags & (FC_ERR_IMU | FC_ERR_TILT_LIMIT |
+    bool noFault = !g_state.killMotors &&
+                   !(g_state.errorFlags & (FC_ERR_IMU | FC_ERR_TILT_LIMIT |
                                            FC_ERR_MOTOR_LOSS));
     osMutexRelease(g_state.safetyMtx);
 

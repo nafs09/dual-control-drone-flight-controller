@@ -15,6 +15,8 @@ MahonyAHRS::MahonyAHRS(const Gains& g)
 
 void MahonyAHRS::reset(const Quaternionf& q) {
     q_            = q;
+    if (!std::isfinite(q_.normSq()) || q_.normSq() < 1.0e-8f) q_ = Quaternionf::identity();
+    q_.normalise();
     gyroBias_     = Vector3f::zero();
     magRefSet_    = false;
     hasMagUpdate_ = false;
@@ -22,12 +24,15 @@ void MahonyAHRS::reset(const Quaternionf& q) {
 }
 
 void MahonyAHRS::setMagReference(const Vector3f& mag_NED) {
-    magRef_NED_ = mag_NED.normalised();
-    magRefSet_  = true;
+    Vector3f reference = mag_NED;
+    if (!std::isfinite(reference.x) || !std::isfinite(reference.y) ||
+        !std::isfinite(reference.z) || !reference.normalise()) return;
+    magRef_NED_ = reference;
+    magRefSet_ = true;
 }
 
 /* ================================================================
- *  updateMag — Improvement #9: full 3D vector magnetometer update
+ *  updateMag — full 3D vector magnetometer update
  *
  *  Instead of extracting a scalar yaw error, we:
  *    1. Rotate the known NED reference field into the estimated
@@ -46,6 +51,7 @@ void MahonyAHRS::setMagReference(const Vector3f& mag_NED) {
  * ================================================================ */
 void MahonyAHRS::updateMag(const Vector3f& mag_body) {
     Vector3f m = mag_body;
+    if (!std::isfinite(m.x) || !std::isfinite(m.y) || !std::isfinite(m.z)) return;
     if (!m.normalise()) return;   /* Degenerate reading */
 
     if (!magRefSet_) {
@@ -70,14 +76,18 @@ void MahonyAHRS::updateMag(const Vector3f& mag_body) {
 }
 
 /* ================================================================
- *  updateIMU — Improvements #5, #8, #10
+ *  updateIMU — high-rate PI complementary observer
  * ================================================================ */
 void MahonyAHRS::updateIMU(const Vector3f& gyro_rps,
                            const Vector3f& accel_mps2,
                            float           dt)
 {
+    if (!std::isfinite(dt) || dt <= 0.0f || dt > 0.02f ||
+        !std::isfinite(gyro_rps.x) || !std::isfinite(gyro_rps.y) ||
+        !std::isfinite(gyro_rps.z) || !std::isfinite(accel_mps2.x) ||
+        !std::isfinite(accel_mps2.y) || !std::isfinite(accel_mps2.z)) return;
     /* ----------------------------------------------------------
-     * Improvement #10: Continuous accelerometer confidence weight
+     * Continuous accelerometer confidence weight
      *
      *   w = exp( −(‖a‖ − g)² / σ_a² )
      *
@@ -89,17 +99,19 @@ void MahonyAHRS::updateIMU(const Vector3f& gyro_rps,
      * ---------------------------------------------------------- */
     float aMag  = accel_mps2.norm();
     float delta = aMag - kGravity;
-    float w_acc = expf(-(delta * delta) / (g_.sigma_a * g_.sigma_a));
+    const float sigma_a = std::fmax(g_.sigma_a, 1.0e-3f);
+    float w_acc = expf(-(delta * delta) / (sigma_a * sigma_a));
 
     /* Normalised accelerometer measurement */
     Vector3f a_norm = (aMag > 1e-3f) ? (accel_mps2 / aMag) : Vector3f::zero();
 
-    /* Estimated gravity direction in body frame = third column of R^T */
-    Vector3f g_body = q_.rotateInverse({0.f, 0.f, 1.f});
+    /* Predicted specific-force direction at rest is world-up in NED. The
+     * measured accelerometer specific force points opposite gravity. */
+    const Vector3f force_pred_body = q_.rotateInverse({0.f, 0.f, -1.f});
 
-    /* Tilt error = cross(estimated_gravity, measured_gravity)
-     * The cross product magnitude ≈ sin(tilt_error); sign gives axis. */
-    Vector3f err_acc = g_body.cross(a_norm) * w_acc;
+    /* Body-frame cross-product innovation; its sign drives a positive tilt
+     * estimate back toward the measured specific-force direction. */
+    Vector3f err_acc = a_norm.cross(force_pred_body) * w_acc;
 
     /* ----------------------------------------------------------
      * Magnetometer correction (set by updateMag)
@@ -110,31 +122,8 @@ void MahonyAHRS::updateIMU(const Vector3f& gyro_rps,
         hasMagUpdate_ = false;
     }
 
-    /* Combined error */
-    Vector3f err = err_acc * 1.f + err_mag;   /* weights already in gains */
-
-    /* ----------------------------------------------------------
-     * Improvement #5: Complete attitude error dynamics
-     *
-     * Full linearised PI observer for gyro bias:
-     *
-     *   δθ̇ = −[ω]× δθ  −  δb_g  −  n_g
-     *
-     * The term −[ω]× δθ couples the current angular velocity into
-     * the bias integrator.  Without it, fast rotations cause the
-     * integral term to lag the true error.
-     *
-     * Implementation: the skew-symmetric action on the current bias
-     * estimate is:
-     *   [ω]× b  =  ω × b
-     * ---------------------------------------------------------- */
-    /* Skew term on current bias: ω × b */
-    Vector3f skewBias = gyro_rps.cross(gyroBias_);
-
-    /* PI feedback on bias integrator including skew coupling */
-    Vector3f biasRate = -( err_acc * g_.ki_acc + err_mag * g_.ki_mag )
-                        - skewBias * dt;
-    gyroBias_ += biasRate * dt;
+    /* Standard Mahony integral feedback estimates gyro bias. */
+    gyroBias_ -= (err_acc * g_.ki_acc + err_mag * g_.ki_mag) * dt;
 
     /* Hard clamp on bias estimate to prevent divergence */
     gyroBias_ = gyroBias_.clamped(0.5f);   /* 0.5 rad/s ≈ 28 deg/s max bias */
@@ -147,7 +136,7 @@ void MahonyAHRS::updateIMU(const Vector3f& gyro_rps,
                    + err_mag * g_.kp_mag;
 
     /* ----------------------------------------------------------
-     * Improvement #8: Exact exponential-map quaternion integration
+     * Exact exponential-map quaternion integration
      *
      *   q_{k+1} = q_k ⊗ exp(ω * dt / 2)
      *

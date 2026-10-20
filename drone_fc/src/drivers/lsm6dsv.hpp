@@ -43,9 +43,9 @@ private:
     static constexpr float kGyroScale =0.0700f*(3.14159265f/180.f);
     static constexpr float kAccelScale=0.000488f*9.80665f;
     void csLow(); void csHigh();
-    void writeReg(uint8_t reg,uint8_t val);
-    uint8_t readReg(uint8_t reg);
-    void readBurst(uint8_t reg,uint8_t* buf,uint8_t len);
+    bool writeReg(uint8_t reg,uint8_t val);
+    bool readReg(uint8_t reg,uint8_t& value);
+    bool readBurst(uint8_t reg,uint8_t* buf,uint8_t len);
 };
 
 }} // FC::Drivers

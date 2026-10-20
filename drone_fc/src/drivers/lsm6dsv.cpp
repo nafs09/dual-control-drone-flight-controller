@@ -9,38 +9,53 @@ namespace FC { namespace Drivers {
 void LSM6DSV::csLow() {HAL_GPIO_WritePin(IMU_CS_PORT,IMU_CS_PIN,GPIO_PIN_RESET);}
 void LSM6DSV::csHigh(){HAL_GPIO_WritePin(IMU_CS_PORT,IMU_CS_PIN,GPIO_PIN_SET);}
 
-void LSM6DSV::writeReg(uint8_t reg,uint8_t val){
+bool LSM6DSV::writeReg(uint8_t reg,uint8_t val){
+    if (!hspi_) return false;
     uint8_t tx[2]={uint8_t(reg&0x7Fu),val}; csLow();
-    HAL_SPI_Transmit(hspi_,tx,2,1); csHigh();
+    const HAL_StatusTypeDef status = HAL_SPI_Transmit(hspi_,tx,2,2);
+    csHigh();
+    return status == HAL_OK;
 }
-uint8_t LSM6DSV::readReg(uint8_t reg){
+bool LSM6DSV::readReg(uint8_t reg,uint8_t& value){
+    if (!hspi_) return false;
     uint8_t tx[2]={uint8_t(reg|SPI_READ),0},rx[2]={}; csLow();
-    HAL_SPI_TransmitReceive(hspi_,tx,rx,2,1); csHigh(); return rx[1];
+    const HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(hspi_,tx,rx,2,2);
+    csHigh();
+    if (status != HAL_OK) return false;
+    value = rx[1];
+    return true;
 }
-void LSM6DSV::readBurst(uint8_t reg,uint8_t* buf,uint8_t len){
+bool LSM6DSV::readBurst(uint8_t reg,uint8_t* buf,uint8_t len){
+    if (!hspi_ || !buf || len == 0u || len > 13u) return false;
     uint8_t tx[14]={}; tx[0]=reg|SPI_READ;
     uint8_t rx[14]={}; csLow();
-    HAL_SPI_TransmitReceive(hspi_,tx,rx,len+1u,2); csHigh();
+    const HAL_StatusTypeDef status = HAL_SPI_TransmitReceive(hspi_,tx,rx,len+1u,2);
+    csHigh();
+    if (status != HAL_OK) return false;
     memcpy(buf,&rx[1],len);
+    return true;
 }
 
 bool LSM6DSV::init(SPI_HandleTypeDef* hspi){
-    /* BUG FIX #9: This driver replaces the absent original IMU code.
-     * Previously ax/gx etc. were uninitialised globals. */
-    hspi_=hspi; csHigh(); HAL_Delay(10);
-    if(readReg(REG_WHO_AM_I)!=WHO_AM_I_VAL) return false;
-    writeReg(REG_CTRL3_C,0x01u); HAL_Delay(1); /* SW reset */
-    writeReg(REG_CTRL3_C,(1u<<6)|(1u<<2));      /* BDU=1, IF_INC=1 */
-    writeReg(REG_CTRL1_XL,(IMU_ACCEL_ODR_CODE<<4)|(IMU_ACCEL_FS_CODE<<2));
-    writeReg(REG_CTRL2_G, (IMU_GYRO_ODR_CODE<<4)|IMU_GYRO_FS_CODE);
-    writeReg(REG_CTRL6_C, (IMU_GYRO_LPF_CODE<<2));
-    writeReg(REG_INT1_CTRL,0x02u); /* DRDY_G → INT1 */
+    hspi_=hspi; init_=false;
+    if (!hspi_) return false;
+    csHigh(); HAL_Delay(10);
+    uint8_t whoAmI = 0u;
+    if (!readReg(REG_WHO_AM_I,whoAmI) || whoAmI != WHO_AM_I_VAL) return false;
+    if (!writeReg(REG_CTRL3_C,0x01u)) return false;
+    HAL_Delay(1); /* SW reset */
+    if (!writeReg(REG_CTRL3_C,(1u<<6)|(1u<<2))) return false; /* BDU, IF_INC */
+    if (!writeReg(REG_CTRL1_XL,(IMU_ACCEL_ODR_CODE<<4)|(IMU_ACCEL_FS_CODE<<2))) return false;
+    if (!writeReg(REG_CTRL2_G, (IMU_GYRO_ODR_CODE<<4)|IMU_GYRO_FS_CODE)) return false;
+    if (!writeReg(REG_CTRL6_C, (IMU_GYRO_LPF_CODE<<2))) return false;
+    if (!writeReg(REG_INT1_CTRL,0x02u)) return false; /* DRDY_G -> INT1 */
     HAL_Delay(1); init_=true; return true;
 }
 
 bool LSM6DSV::readRaw(Vector3f& gyro_rps,Vector3f& accel_mps2){
     if(!init_) return false;
-    uint8_t buf[12]; readBurst(REG_OUTX_L_G,buf,12);
+    uint8_t buf[12];
+    if (!readBurst(REG_OUTX_L_G,buf,12)) return false;
     auto s16=[&](int i){return(int16_t)((uint16_t)buf[i+1]<<8|buf[i]);};
     float gr[3]={(float)s16(0),(float)s16(2),(float)s16(4)};
     float ar[3]={(float)s16(6),(float)s16(8),(float)s16(10)};
@@ -52,6 +67,9 @@ bool LSM6DSV::readRaw(Vector3f& gyro_rps,Vector3f& accel_mps2){
                 kSign[2]*ar[kMap[2]]*kAccelScale};
     return true;
 }
-bool LSM6DSV::selfTest(){return readReg(REG_WHO_AM_I)==WHO_AM_I_VAL;}
+bool LSM6DSV::selfTest(){
+    uint8_t whoAmI = 0u;
+    return readReg(REG_WHO_AM_I,whoAmI) && whoAmI == WHO_AM_I_VAL;
+}
 
 }} // FC::Drivers

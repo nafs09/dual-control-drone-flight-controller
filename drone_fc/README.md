@@ -1,87 +1,105 @@
-# Flight controller architecture and setup
+# Firmware architecture and setup
 
-## Scope and status
+This folder contains the Drone OS v1.1 flight-controller source for an STM32F722RET6 target. It is a source package, not a complete CubeMX firmware project: generated HAL files, startup and linker files, peripheral initialization, and a reproducible target build are not included.
 
-This folder contains the Drone OS v1.1 flight-controller sources for the STM32F722RET6. The source package does not include the generated STM32Cube project, HAL/CMSIS-RTOS implementation, linker script, startup code, or a build system. Peripheral pin macros describe the intended board allocation; they do not configure the hardware by themselves.
+The planned runtime keeps Mahony as the high-rate attitude pre-computation path and uses the 24-state left-invariant InvEKF for navigation and calibration. Mahony runs on each IMU-paced control tick and its quaternion increments are passed to InvEKF. The same Mahony attitude supplies the fast attitude controller. InvEKF fuses GPS and any valid barometer or magnetometer samples and provides NED position and velocity to the outer loops.
 
-The active estimator is the 15-state right-invariant InvEKF in src/estimation/invariant_ekf.*; the v1.1 system loop uses it for attitude and navigation. A Mahony AHRS module is also present in src/estimation/mahony_ahrs.*, but it is not currently instantiated or scheduled by system startup and its output is not connected to the control loop.
+## Runtime paths
 
-This is a development source tree, not flight-ready firmware. The barometer and magnetometer hardware drivers, MAVLink serialization, SD/FatFS logging, current measurement, startup-calibration call site, DShot telemetry scale validation, and board-level configuration remain unfinished.
-
-## Runtime architecture
-
-| Path | Nominal rate | Current behavior |
+| Path | Nominal rate | Behavior in source |
 |---|---:|---|
-| IMU/control loop | 3840 Hz | Waits for IMU data-ready; samples IMU, propagates nominal InvEKF state, runs FSM and control, sends DShot commands |
-| InvEKF covariance | 480 Hz | Covariance prediction every 8 IMU samples |
-| Gravity correction | about 101 Hz | Accelerometer gravity observation when the sample is usable |
-| Camera velocity loop | about 101 Hz | Converts NED velocity error to bounded roll, pitch, and thrust correction |
-| Camera position loop | about 49.9 Hz | GPS position/vertical-position hold setpoint update when hold is requested and GPS fix is valid |
-| GPS | 10 Hz task | Parses UBX NAV-PVT, establishes a local NED origin, updates position/velocity, and marks fixes stale after 500 ms |
-| Barometer | 50 Hz task | Update consumer exists; MS5611 read/driver is not implemented |
-| Magnetometer | 100 Hz task | Update consumer exists; QMC5883L read and calibration are not implemented |
-| Safety | 100 Hz | Checks IMU, RC, tilt, battery voltage, geofence, and motor telemetry |
-| CRSF | task polling | Reads USART2 input and applies receiver timeout |
-| MAVLink | 10 Hz task | Task placeholder; messages are not built or transmitted |
-| Logger | queue task | Task placeholder; FatFS writes are not implemented |
+| IMU, Mahony, attitude/rate control | 3840 Hz | Control task waits on IMU data-ready and updates Mahony each sample |
+| InvEKF nominal propagation | each IMU sample | Uses IMU data and Mahony quaternion increments |
+| InvEKF covariance prediction | 480 Hz | Runs every eight nominal IMU samples |
+| Camera velocity loop | ~101 Hz | Converts NED velocity error into bounded tilt and thrust requests |
+| Camera position loop | ~49.9 Hz | GPS/hold-gated position setpoint update |
+| GPS task | 10 Hz | Parses UBX NAV-PVT, requires a 3D fix, at least six satellites and pDOP no greater than 5 by default, sets local origin, rejects stale fixes after 500 ms |
+| Barometer task | 50 Hz | Consumes relative-altitude samples; MS5611 hardware driver is pending |
+| Magnetometer task | 100 Hz | Consumes calibrated field and NED reference; QMC5883L driver is pending |
+| Safety monitor | 100 Hz | Checks receiver, IMU, tilt, battery, geofence, motor telemetry, and watchdog path |
+| CRSF task | UART/polling | Receives RC data and applies receiver timeout |
+| MAVLink and logger | task placeholders | USB CDC message generation and FatFS record writes remain unimplemented |
 
-The nominal rates describe software scheduling. Actual rates and latency depend on the external project’s clock tree, sensor configuration, interrupt setup, and RTOS tick.
+These are source scheduling targets. The configured MCU clock, RTOS tick, sensor ODR, interrupt priorities, DMA setup, and end-to-end latency must be measured on the target.
 
-## Estimator and frames
+## Coordinate frames and measurement contracts
 
-The estimator uses body FRD axes (forward, right, down) and world NED axes (north, east, down). Its quaternion rotates body vectors into NED. Gravity is positive on the NED down axis.
+- Navigation/world frame is NED: north +X, east +Y, down +Z.
+- Body frame is FRD: forward +X, right +Y, down +Z.
+- The quaternion rotates body vectors into NED.
+- Position is metres; velocity is m/s; acceleration is m/s²; angular rate is rad/s; internally angles are radians.
+- The IMU accelerometer supplies specific force. Confirm polarity, scale, and mounting transform against the physical board before using navigation results.
+- GPS position and velocity passed to InvEKF are local NED coordinates. The current GPS task uses the first accepted fix as origin.
+- Barometer samples are altitude relative to the same navigation origin, positive up, in metres.
+- Magnetometer data passed to InvEKF is a hard/soft-iron calibrated body vector in microtesla. Its NED reference must use the same units. Mahony normalizes its copy for attitude correction.
 
-InvEKF propagates attitude, velocity, and position for each IMU sample, accumulates samples between covariance predictions, and applies available measurement updates. The current sensor integration is mixed: the UBX GPS path is implemented, while barometer and magnetometer tasks only consume valid data supplied through shared state or simulation. The GPS local origin is the first accepted fix.
+## Estimation state and update path
 
-See [process.md](process.md) for loop equations, timing, and estimator update rates.
+The InvEKF retains 24 error coordinates:
 
-## Controller modes
+| State group | Size | Meaning |
+|---|---:|---|
+| Attitude / velocity / position | 9 | Left-invariant body-frame errors on SE_2(3) |
+| Gyroscope bias | 3 | Body-frame rad/s |
+| Accelerometer bias | 3 | Body-frame m/s² |
+| Motor time constant | 1 | Scalar seconds |
+| Magnetometer bias | 3 | Body-frame microtesla |
+| Barometer bias | 1 | Altitude offset in metres |
+| Barometer scale | 1 | Fractional scale error |
+| Wind | 3 | NED m/s |
+| **Total** | **24** | |
 
-- **FPV:** receiver sticks command body-rate setpoints; the rate controller drives the mixer.
-- **Camera:** receiver sticks command NED velocity. The velocity controller commands tilt and vertical thrust. When position hold is requested and GPS is valid, the position loop supplies horizontal and vertical setpoints.
-- **Failsafe:** the FSM initializes a camera-style controller state, ramps a positive NED-down velocity setpoint, and only enters landing when barometer validity, low altitude, and low vertical speed agree.
-- **Landing:** the current code ramps collective down before disarming; this behavior still requires controlled bench validation.
+The controller uses the high-rate Mahony quaternion. InvEKF follows the quaternion’s successive increments while it propagates navigation and covariance. Accelerometer gravity correction stays in Mahony; the navigation filter does not add a second gravity observation from the same sample. GPS position/velocity, relative barometric altitude, and calibrated magnetic field updates are innovation-gated. Motor-time-constant and wind-prior update APIs are available, but the runtime does not create motor-speed observations from raw DShot values or invent wind measurements.
 
-The NMPC-RTI code in src/control/future/ is an interface scaffold only. The active controller remains the cascaded PID path.
+For equations and state/error conventions see [process.md](process.md). The complete runtime overview and colored diagrams are in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 
-## Intended hardware allocation
+## Control modes
 
-The allocation below follows inc/fc_config.h and is a firmware-side plan. Confirm it against the board schematic and generated CubeMX configuration. See [src/pins.md](src/pins.md) for conflicting legacy assignments and details.
+- **FPV / Acro:** pilot sticks set body-rate targets; attitude, velocity, and position loops are bypassed.
+- **Camera / stabilized:** sticks set heading-relative NED velocity targets. When hold is requested and GPS is valid, position error supplies the velocity setpoint.
+- **Failsafe:** receiver or safety faults can request a bounded NED-down velocity command. Landing transition depends on valid barometer data, low altitude, and low vertical speed.
+- **Landing:** the FSM reduces collective before disarming. Verify this transition and all motor outputs in simulation and on a secured bench before any flight evaluation.
 
-| Function | Interface and pins |
+The active controller is the cascaded PID path. [src/control/future/](src/control/future/README.md) contains an NMPC-RTI interface scaffold only, without a solver or motor-output connection.
+
+## Target allocation
+
+| Function | Intended interface |
 |---|---|
-| IMU | LSM6DSV, SPI1 PA5/PA6/PA7, CS PA4, DRDY PC4 |
-| Barometer | MS5611, shared SPI1, CS PC5; driver absent |
-| Magnetometer | QMC5883L, I2C1 PB6/PB7; driver/calibration absent |
-| GPS | USART1 PA9/PA10; UBX NAV-PVT parser present |
-| CRSF | USART2 PA2/PA3 at 420 kbaud |
+| LSM6DSV IMU | SPI1 PA5/PA6/PA7, CS PA4, DRDY PC4 |
+| MS5611 barometer | SPI1, CS PC5; driver pending |
+| QMC5883L magnetometer | I2C1 PB6/PB7; driver and calibration pending |
+| UBX GPS | USART1 PA9/PA10 |
+| CRSF / ELRS | USART2 PA2/PA3 at the configured 420 kbaud target |
 | Motors 1–4 | UART4 PA0, UART5 PC12, USART3 PB10, USART6 PC6 |
-| USB CDC | USB OTG FS PA11/PA12; MAVLink messages absent |
-| SD | SPI2 PB13/PB14/PB15, CS PC1; logger absent |
-| Battery voltage | ADC1 channel 1, PA1; conversion currently assumes a fixed divider |
-| Current signal | ADC1 channel 10, PC0; not currently sampled into battery state |
-| Status/error LEDs | PB0 / PB12 |
-| Buzzer | PC7; optional output, not integrated |
+| USB CDC | USB OTG FS PA11/PA12; MAVLink message handling pending |
+| microSD | SPI2 PB13/PB14/PB15, CS PC1; logger pending |
+| Battery voltage | ADC1 channel 1, PA1; divider calibration pending |
+| Current signal | ADC1 channel 10, PC0; sampling path pending |
+
+This is a firmware allocation proposal. Resolve the conflicts in [src/pins.md](src/pins.md) against the PCB schematic before creating the CubeMX project or wiring hardware.
 
 ## Build and bring-up
 
-1. Add these sources to the matching STM32Cube project and supply the generated HAL handles, USB CDC, CMSIS-RTOS v2, interrupt vector integration, and linker/startup files.
-2. Resolve the pin conflicts documented in src/pins.md before generating or wiring the board project.
-3. Configure and verify the clock tree, SPI mode and rates, USART receive/transmit modes, DMA/interrupt priorities, ADC channels, USB 48 MHz clock, RTOS tick, and IWDG timing against the actual MCU and board.
-4. Keep propellers removed. Validate sensor identity/scales, frame signs, RC channels and timeout, estimator convergence, failsafe transitions, motor order/direction, and DShot response with logs or a simulator.
-5. Tune PID, noise, bias time constants, thrust mapping, and safety thresholds on the target hardware before any flight evaluation.
+1. Integrate these sources with the matching STM32Cube-generated startup, HAL, CMSIS-RTOS v2, USB CDC, and linker configuration.
+2. Confirm the actual clock tree and USB clock, GPIO alternate functions, SPI/I2C modes and rates, UART baud and half-duplex behavior, DMA routing, interrupt priorities, and RTOS-safe ISR calls.
+3. With propellers removed, verify IMU identity, scale, axes, data-ready timing, Mahony orientation, InvEKF convergence, GPS origin and timeout, CRSF channel mapping, failsafe transitions, DShot output, motor order, and telemetry.
+4. Integrate calibrated barometer/magnetometer inputs and test altitude and field update models with known units and references.
+5. Tune estimator noise, controller gains, thrust mapping, motor response, and safety limits from target measurements; then validate simulation/HIL and restrained bench behavior.
 
-There is no complete build configuration in this folder, so a firmware build cannot be reproduced from this source package alone.
+No successful target build or flight validation should be inferred from source presence alone.
 
-## Known remaining work
+## Remaining implementation work
 
-- Implement and calibrate MS5611 and QMC5883L drivers.
-- Complete MAVLink serialization and transport handling.
-- Implement the FatFS logger and define the log record schema.
+- Complete the CubeMX/HAL/RTOS target project and verify all pin assignments against the board.
+- Implement and calibrate MS5611 and QMC5883L drivers; supply valid relative altitude and calibrated magnetic vectors in the documented frames and units.
+- Integrate the bounded StartupCalibration helper into startup, define whether its bias seeds the driver or estimator states, and propagate calibration timeout/failure into an explicit arm inhibit.
+- Generate and send the chosen MAVLink messages over USB CDC.
+- Define a log record schema, queue records, and implement FatFS open/write/flush/error handling.
 - Sample battery current and calibrate voltage/current conversion.
-- Call startup gyro calibration with timeout/failure handling.
-- Decode and validate bidirectional DShot telemetry timing; check freshness and ESC compatibility.
-- Confirm DShot DMA/HAL behavior, peripheral setup, interrupt priorities, and timing on the actual board.
-- Finish hardware calibration, motor/thrust characterization, magnetic reference/declination, PID and EKF tuning.
-- Add a tested return-to-home strategy and any chosen rangefinder integration.
-- Supply a target build project and run simulation, bench, and hardware-in-loop validation.
+- Validate bidirectional DShot decode timing, eRPM conversion, freshness, ESC settings, DMA behavior, and motor order.
+- Supply a calibrated command-to-shaft-speed model before calling InvEKF motor-time-constant updates.
+- Tune parameters and validate failsafe, landing, and safety thresholds on the configured target.
+- Measure worst-case timing/memory and validate closed-loop behavior before connecting any NMPC solver.
+
+The project’s license is in [../LICENSE.txt](../LICENSE.txt).

@@ -59,14 +59,14 @@ public:
     /**
      * @brief  Main update at IMU rate (~3840 Hz).
      * @param dt       True elapsed time since last call [s].
-     * @param ekf      Invariant navigation EKF.
+     * @param ekf      24-state invariant navigation filter.
      */
     void update(float dt, InvEKF& ekf);
 
     /**
      * @brief  Slower update at ~50 Hz for position loop.
      * @param dt   ~20 ms step.
-     * @param ekf  Invariant navigation EKF.
+     * @param ekf  24-state invariant navigation filter.
      */
     void updatePositionLoop(float dt, const InvEKF& ekf);
 

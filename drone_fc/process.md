@@ -1,109 +1,180 @@
 # Control, estimator, and frame reference
 
-This document describes the v1.1 source as implemented, and distinguishes active paths from stubs. It is not a control-system validation report.
+This document describes the v1.1 source-level design. It records the intended final architecture and mathematical conventions, while marking which measurement sources still depend on hardware integration. Source code alone is not a target validation report.
 
-## 1. Frames and units
+## 1. Frames, units, and quaternion convention
 
-- World navigation is NED: north +X, east +Y, down +Z.
+- World navigation axes are NED: north +X, east +Y, down +Z.
 - Body axes are FRD: forward +X, right +Y, down +Z.
-- The nominal quaternion rotates body vectors into NED.
-- Position is metres, velocity m/s, acceleration m/s², angles radians internally, and angular rate rad/s.
-- Specific force from the accelerometer is bias-corrected and combined with the gravity convention in the estimator. Check the sensor driver’s configured scale and axis mapping against the physical board before use.
+- The nominal quaternion maps a body vector into NED.
+- Position is metres, velocity is m/s, specific force is m/s², and angular rate is rad/s. Quaternion and controller angles are radians internally.
+- GPS position/velocity enter the filter in local NED. The first accepted GPS fix establishes the current local origin.
+- Barometric samples are relative altitude, positive up, in metres.
+- Magnetometer samples are hard/soft-iron calibrated vectors in body FRD, in microtesla; the reference field is NED and uses the same units.
 
-The attitude error sent to the body-rate loop is q_current conjugate multiplied by q_desired. That makes the small rotation error and gyro rate live in the same body frame.
+Sensor sign, range, mounting rotation, timing, and calibration remain target integration checks. In particular, verify accelerometer polarity at rest: the estimator adds positive NED-down gravity to the rotated specific force, which should produce near-zero translational acceleration when stationary and level.
 
-## 2. Active loop schedule
+## 2. Active estimator architecture
 
-| Loop | Nominal rate | Implementation |
+### Mahony high-rate attitude pre-computation
+
+Mahony is updated for every IMU sample in the IMU-paced control task. It integrates gyro rate after bias correction and uses the accelerometer direction as a smooth, confidence-weighted tilt observation. Valid magnetometer samples contribute a full-vector correction. Its quaternion is the low-latency attitude used by the attitude controller.
+
+### InvEKF navigation and calibration filter
+
+InvEKF consumes each accelerometer and gyroscope sample together with the corresponding Mahony body-to-NED quaternion. It follows the relative quaternion increment rather than replacing the AHRS with a second IMU integrator. It propagates NED position/velocity nominal states per IMU sample and predicts the covariance every eight samples (nominally 480 Hz from a 3840 Hz IMU/control target). The Mahony quaternion remains the fast control attitude; InvEKF position and velocity feed the outer loops.
+
+Accelerometer gravity correction remains inside Mahony. The InvEKF does not apply another gravity measurement from the same sample, which would incorrectly treat one sensor observation as two independent measurements. Slower GPS, barometer, and magnetometer data update InvEKF when valid. GPS fusion is active in the current task path. Barometer and magnetometer acquisition still depend on drivers that are not included.
+
+## 3. The 24 InvEKF error coordinates
+
+| Index range | Size | Symbol / state | Coordinates |
+|---|---:|---|---|
+| 0–2 | 3 | Attitude error, δθ | Left-invariant tangent, body frame |
+| 3–5 | 3 | Velocity error, δv | Left-invariant tangent, body frame |
+| 6–8 | 3 | Position error, δp | Left-invariant tangent, body frame |
+| 9–11 | 3 | Gyro bias, b_g | Additive body-frame rad/s |
+| 12–14 | 3 | Accelerometer bias, b_a | Additive body-frame m/s² |
+| 15 | 1 | Motor time constant, τ_m | Scalar seconds |
+| 16–18 | 3 | Magnetometer bias, b_m | Additive body-frame µT |
+| 19 | 1 | Barometer bias, b_h | Altitude offset, metres |
+| 20 | 1 | Barometer scale, s_h | Fractional scale error |
+| 21–23 | 3 | Wind, w_NED | Additive NED m/s |
+| **Total** | **24** | | |
+
+The first nine errors use the body-frame error Xhat inverse times X, called a left-invariant SE_2(3) error in the convention used here. Nominal position/velocity remain stored in NED. During correction injection:
+
+\[
+q^+ = q\,\operatorname{Exp}(\delta\theta/2),\qquad
+v^+ = v + R(q)\,\delta v,\qquad
+p^+ = p + R(q)\,\delta p.
+\]
+
+Gyro, accelerometer, and magnetic biases are additive in body coordinates. Wind is additive in NED. Motor time constant is constrained to 1 ms–1 s and barometer scale to ±20%. Bias, wind, barometer, and actuator calibration states have configurable Gauss–Markov process terms; covariance propagation uses a third-order transition approximation and two-node Gauss–Legendre integration of the continuous process noise.
+
+## 4. Nominal inertial propagation and covariance
+
+At each IMU tick, attitude is advanced by the shortest signed increment between the previous and current Mahony quaternions. With the midpoint attitude \(q_{k+1/2}\), body specific force \(f_b = a_m-b_a\), NED velocity \(v\), wind estimate \(w\), and configured drag coefficient \(k_d\), the source model is:
+
+\[
+a_{NED}=R(q_{k+1/2})f_b + [0,0,g]^T - k_d(v-w),
+\]
+\[
+p_{k+1}=p_k+v_k\Delta t+\tfrac12a_{NED}\Delta t^2,\qquad
+v_{k+1}=v_k+a_{NED}\Delta t.
+\]
+
+The filter accumulates mean bias-corrected force and angular rate over each covariance interval. The continuous error Jacobian contains attitude/rate coupling, force/attitude coupling, gyro/accelerometer bias coupling, position/velocity coupling, linear drag, and wind sensitivity. Process noise includes gyro and accelerometer white noise, bias random walks, actuator/magnetic/barometer parameter random walks, and horizontal/vertical wind noise.
+
+The covariance update is \(P^- = \Phi P \Phi^T + Q_d\). Measurement updates use innovation covariance inversion with pivoting, NIS gating, a Joseph covariance form, symmetry stabilization, and an invariant error reset Jacobian. All estimator arrays are fixed-size; the filter does not allocate on the heap.
+
+## 5. Measurement models and gates
+
+### GPS position and velocity
+
+The task converts latitude/longitude/altitude to local NED and passes receiver-reported `hAcc`, `vAcc`, and `sAcc` to InvEKF. A fix must have a valid 3D NAV-PVT solution, at least six satellites, and position DOP in the range (0, 5] by default; these thresholds are configurable. Receiver accuracy values already reflect its geometry estimate, so position DOP is a quality gate and is not multiplied into the measurement variance. Configured variance floors protect the update from zero or overconfident receiver values.
+
+For position, the innovation is \(p_{GPS}-p\) in NED and the position-error block of the observation Jacobian is \(R(q)\). The velocity update likewise uses \(v_{GPS}-v\) in NED with \(R(q)\) in its velocity-error block. This preserves the receiver's axis-dependent NED covariance while the filter error coordinates remain body-frame. Position and velocity have separate NIS gates.
+
+### Barometric altitude
+
+For relative altitude \(h=-p_D\), scale \(s_h\), and bias \(b_h\), predicted barometer altitude is:
+
+\[
+\hat h_{baro}=h(1+s_h)+b_h.
+\]
+
+The Jacobian includes the body-frame projection of NED down-position, plus direct bias and scale terms. The caller can increase measurement uncertainty using vibration RMS. The runtime task currently uses a fixed uncertainty and waits for a valid shared-state sample; the physical MS5611 driver is pending.
+
+### GPS relative altitude
+
+An optional `updateGPSAltitude` method performs a scalar relative-altitude observation with the GPS position variance floor. It is available to callers but the current NAV-PVT task uses the coupled 3D position update instead.
+
+### Magnetometer field
+
+For calibrated body measurement \(m_b\), NED reference \(m_N\), and body bias \(b_m\), the predicted field is:
+
+\[
+\hat m_b=R(q)^Tm_N+b_m.
+\]
+
+The update estimates both attitude and three-axis magnetic bias. Its variance grows when the measured field magnitude departs from the configured local reference strength, reducing trust during interference. Mahony normalizes its own copy of the calibrated vector; InvEKF retains the field units so its bias remains in microtesla. A QMC5883L acquisition/calibration driver and the local magnetic reference are not yet part of the source package.
+
+### Motor time constant and wind prior
+
+`updateMotor` estimates the actuator lag from command speed, measured shaft speed, previous measured speed, and elapsed time. This update must not be driven by raw DShot command values: the caller needs a calibrated mapping from command to shaft angular speed and a valid telemetry conversion first. No runtime task currently invokes it.
+
+`setWindPrior` accepts a NED wind estimate and uncertainty. It is an explicit optional observation, not an automatic estimate from an unvalidated drag model. The current runtime has no wind sensor or independent wind source, so no wind prior is currently applied.
+
+## 6. Runtime schedule and data ownership
+
+| Loop or task | Nominal rate | State/data path |
 |---|---:|---|
-| IMU and FSM | 3840 Hz | Control task waits on IMU DRDY |
-| InvEKF nominal propagation | each IMU sample | Integrates corrected gyro and specific force |
-| InvEKF covariance prediction | about 480 Hz | Prediction every eight IMU samples |
-| Gravity observation | about 101 Hz | Decimated accelerometer update |
-| Camera velocity | about 101 Hz | Every 38 IMU ticks |
-| Camera position | about 49.9 Hz | Every 77 IMU ticks |
-| GPS update | 10 Hz task | UBX NAV-PVT parser; local NED origin is first valid fix |
-| Barometer / magnetometer consumers | 50 / 100 Hz tasks | Read shared-state samples only; physical sensor drivers are incomplete |
-| Safety | 100 Hz | Fault checks and watchdog feed |
+| IMU and Mahony | 3840 Hz | DRDY paced; high-rate attitude output |
+| InvEKF nominal propagation | each sample | NED position/velocity propagated from IMU and Mahony quaternion |
+| InvEKF covariance prediction | 480 Hz | Every eight IMU samples |
+| Attitude and body-rate control | IMU rate | Mahony attitude and bias-corrected gyro feed fast loops |
+| Camera velocity loop | ~101 Hz | NED velocity to desired tilt/thrust |
+| Camera position loop | ~49.9 Hz | GPS/hold-gated NED position hold |
+| GPS | 10 Hz task | UBX NAV-PVT parsing, origin, fusion, stale-fix handling |
+| Barometer / magnetometer | 50 / 100 Hz tasks | Measurement consumers; physical drivers pending |
+| Safety | 100 Hz | Receiver, IMU, tilt, battery, geofence, motor telemetry, watchdog |
 
-These are nominal rates from the source. They require confirmation on the configured MCU project and hardware.
+The source protects shared sensor and navigation snapshots with CMSIS-RTOS mutexes. The high-priority control loop updates the AHRS and estimator, then publishes attitude, corrected body rate, and navigation state. Measurement tasks copy input samples under their sensor mutex, release it, then update InvEKF under the navigation mutex. The AHRS gyro-bias estimate is synchronized from InvEKF after covariance and measurement updates.
 
-## 3. Estimation architecture
+## 7. Cascaded controller
 
-### InvEKF (v1.1 active path)
+### FPV / Acro
 
-The right-invariant estimator uses 15 error coordinates: attitude, velocity, position, gyro bias, and accelerometer bias (three each). The nominal state propagates at IMU rate. Covariance propagation is decimated to about 480 Hz, and gravity, GPS, barometer, and magnetometer updates are exposed with innovation gating and covariance reset.
+Roll, pitch, and yaw stick channels map to body angular-rate setpoints. The rate controller compares these with the bias-corrected body gyro rates and generates torque commands for the Quad-X mixer. Position, velocity, and attitude setpoint loops are bypassed.
 
-The v1.1 system loop selects InvEKF for attitude and navigation. GPS updates arrive from the UBX NAV-PVT path. Barometer and magnetometer update methods are called only when their shared-state input is marked valid; this source tree does not contain the sensor drivers that would provide those physical samples.
+### Camera / stabilized mode
 
-### Mahony AHRS
+1. **Position loop (~50 Hz):** when position hold is requested and GPS is valid, position error plus velocity damping produces a NED velocity setpoint.
+2. **Velocity loop (~100 Hz):** NED velocity error produces horizontal acceleration and vertical thrust corrections.
+3. **Attitude loop (IMU rate):** desired tilt and captured yaw form a desired quaternion; the shortest quaternion error becomes a body-rate setpoint.
+4. **Rate loop and mixer (IMU rate):** rate PID torque and collective go through the Quad-X mixer and output limits.
 
-The source tree includes a Mahony AHRS module for high-rate attitude estimation. It is not currently instantiated or scheduled by system startup, and its output is not connected to the active control path. InvEKF is the estimator currently providing attitude and navigation to the v1.1 system loop.
+If hold is not active, horizontal sticks become heading-relative velocity targets. Throttle sets the NED-down velocity target. The source RC field is named `altHold` even though it gates horizontal and vertical position hold.
 
-## 4. Control cascade
+### Velocity-to-tilt conversion
 
-### FPV
+Given horizontal desired NED accelerations (a_N,a_E) and current yaw ψ:
 
-Receiver roll, pitch, and yaw channels map to body-rate setpoints. The rate controller compares those setpoints with bias-corrected body gyro rates and produces torque commands for the mixer. Attitude, velocity, and position loops are bypassed.
+\[
+a_F=a_N\cos\psi+a_E\sin\psi,\qquad
+a_R=-a_N\sin\psi+a_E\cos\psi,
+\]
+\[
+\theta_{desired}=-a_F/g,\qquad
+\phi_{desired}=a_R/g.
+\]
 
-### Camera mode
+The velocity controller clamps requested tilt near ±0.524 rad (30°), with an additional configured command limit in the mode path. Validate signs and axes with props removed and then on a restrained rig.
 
-The active cascade is:
+### NED-down thrust sign
 
-1. Position/vertical-position hold, about 49.9 Hz when hold is selected and GPS is valid: position error plus measured-velocity damping produces an NED velocity setpoint.
-2. Velocity loop, about 101 Hz: NED velocity error produces horizontal acceleration commands and a vertical thrust correction.
-3. Attitude loop, each IMU tick: the desired body tilt and captured yaw produce a body-frame quaternion error and a body-rate setpoint.
-4. Rate loop and mixer, each IMU tick: body-rate error produces torque, then the X-frame mixer allocates collective and torque to four DShot outputs.
+NED down is positive. A positive vertical-velocity PID result means the requested downward speed exceeds the measured speed; this should reduce thrust. The implementation negates the PID result before applying it as the throttle correction. The mixer clamps output and desaturates torque, but actual thrust response depends on battery, ESC, motor, propeller, and thrust mapping.
 
-If GPS is invalid or position hold is not selected, horizontal stick commands map to a heading-relative NED velocity setpoint. The throttle channel maps to vertical velocity.
+## 8. Safety, failsafe, and landing
 
-## 5. Velocity-to-tilt conversion
+On failsafe entry, the FSM switches to camera-style control, captures yaw, clears selected controller state, and ramps a positive NED-down velocity target. Landing transition requires valid barometer input, low AGL altitude, and low vertical speed. Battery, geofence, receiver, and motor/IMU fault paths can request failsafe or kill outputs.
 
-The horizontal velocity PID produces desired NED acceleration a_N and a_E. With current yaw ψ, code rotates that acceleration into body forward/right components:
+This describes source behavior, not a verified safety guarantee. Validate every trigger, reset, stale-data case, altitude reference, transition, and motor response in simulation and on a secured bench. There is no return-to-home implementation.
 
-- a_forward = a_N cos(ψ) + a_E sin(ψ)
-- a_right = -a_N sin(ψ) + a_E cos(ψ)
-- pitch_desired = -a_forward / g
-- roll_desired = a_right / g
+## 9. Future NMPC-RTI interface
 
-The desired tilt is clamped to approximately ±0.524 rad (30°) in this controller. The flight-mode command path also applies configured angle limits. Gains, signs, and axis directions require validation with props removed and then on a restrained test setup.
+`src/control/future/nmpc_rti.hpp` defines a fixed-size 20-interval horizon and separate preparation and feedback calls around a caller-supplied backend. Inputs use SI units and the frames above. The source provides no dynamics model, optimizer, QP solver, constraints, warm start, mixer connection, FSM mode, deadline monitor, or fallback behavior. A successful callback status does not establish feasibility or safety. The PID cascade remains active until an optimizer is target-bounded and validated.
 
-## 6. NED vertical velocity and thrust sign
+## 10. Tuning and validation sequence
 
-NED down is positive. The vertical PID error is setpoint velocity minus measured velocity. A positive PID result means the requested downward velocity is greater than measured; that requires less thrust. Conversely, if the aircraft is descending faster than requested, the error is negative and thrust must increase.
+1. Verify IMU identity, configured scale, axes, polarity, DRDY timing, and calibration with motors disconnected.
+2. Check Mahony attitude and gyro bias with stationary and controlled rotations; verify quaternion/frame conventions.
+3. Check InvEKF propagation and 24 covariance diagonal values with recorded or simulated motion before enabling GPS/barometer/magnetometer updates.
+4. Verify CRSF channels, switch polarity, arming, timeout, failsafe, and kill behavior.
+5. Verify DShot packet timing, output order/direction, ESC compatibility, telemetry decode, freshness, and emergency output behavior with props removed.
+6. Tune the rate controller, then attitude, velocity, and position loops. Confirm thrust sign, saturation, and motor response on a restrained setup.
+7. Validate GPS origin/fix timeout, barometer reference, magnetic calibration, battery thresholds, geofence, failsafe, and landing behavior.
+8. Tune estimator noise and state time constants using measured sensor/vehicle data. Only feed motor-lag or wind updates from calibrated, valid observations.
 
-The v1.1 implementation negates the PID result before applying it as a throttle/thrust delta. The mixer then applies collective limits and torque desaturation. The actual thrust response depends on the ESC, motor, propeller, battery, and mixer calibration.
-
-## 7. Position hold
-
-The position loop runs only in camera mode when the receiver requests hold and a valid GPS fix is present. It captures the current position when hold is engaged. Its outputs become NED velocity setpoints for the velocity loop. GPS accuracy, latency, antenna placement, and local origin quality determine the practical hold performance; there is no claim of precision positioning from this code alone.
-
-The RC field is named altHold in source even though the hold path includes horizontal position as well as the vertical coordinate.
-
-## 8. Failsafe and landing
-
-On entry to failsafe the FSM switches to camera-style gains, captures current yaw, clears controller state, and ramps a positive NED-down velocity command to a configured limit. The landing transition requires a valid barometer sample, low AGL altitude, and low vertical speed. Battery and geofence safety events can request failsafe asynchronously.
-
-This is an implementation path, not a validated flight safety guarantee. Test each trigger, state transition, altitude reference, and motor response in simulation and on a secured bench. There is no return-to-home implementation.
-
-## 9. NMPC-RTI future interface
-
-src/control/future/nmpc_rti.hpp defines a 20-step reference horizon and a caller-supplied prepare/feedback backend. State, reference, and model inputs use SI units and the frames above. No optimizer/QP backend is supplied, and the interface is not connected to the FSM, mixer, or motor commands. Until a fixed-memory solver has bounded execution time on the target and has been validated, the active control path remains the PID cascade.
-
-## 10. Tuning and validation order
-
-1. Verify IMU identity, axis mapping, scale, bias, and DRDY rate with motors disconnected.
-2. Verify quaternion/body/world conventions and estimator behavior using recorded or simulated motion.
-3. Verify CRSF channel mapping, switch polarity, timeout, arming timer, and failsafe transition.
-4. Verify DShot packet timing, motor order, spin direction, telemetry response, and kill behavior with propellers removed.
-5. Tune the rate loop before camera attitude and velocity loops. Confirm thrust signs and saturation on a restrained rig.
-6. Validate GPS origin, fix timeout, position hold, barometer reference, battery thresholds, geofence, and landing transition.
-7. Tune estimator noise/bias parameters and thrust/motor model from measured data.
-
-There is no included target project, automated test suite, or flight log data in this source package. Do not infer successful target execution from the source documentation.
-
-## 11. Integration status
-
-Implemented in source: IMU driver, CRSF input parser, UBX NAV-PVT parser and GPS update path, InvEKF and Mahony AHRS modules, cascaded PID control, FSM/safety hooks, mixer, DShot output interface, and HIL/SIL state hooks.
-
-Incomplete or awaiting hardware integration: CubeMX/HAL project, MS5611 and QMC5883L drivers, sensor calibration, MAVLink messages, FatFS logging, current measurement, startup calibration call site, validated DShot telemetry conversion, return-to-home, and target-specific tuning.
+The package contains no complete target build system, automated estimator suite, or flight logs. Reproducible host/target build and closed-loop validation remain required.

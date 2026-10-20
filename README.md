@@ -1,56 +1,62 @@
 # Quadcopter Flight Controller
 
-A research-oriented flight-control stack for a custom STM32-based quadrotor, developed from first principles to explore embedded systems, nonlinear state estimation, and multi-loop flight control.
+A research-oriented flight-control stack for a custom STM32 quadrotor. Drone OS is built as an embedded engineering platform for multirotor control, real-time software, and state estimation, with the active architecture kept explicit in source and documentation.
 
-Unlike hobby flight controllers built on an existing autopilot framework, this project is intended as an engineering and research platform. Its software is organized into estimation, control, communication, safety, and actuation modules, with explicit attention to coordinate frames and real-time scheduling.
-
-> **Development status:** This is a source package, not a flight-qualified firmware release. The v1.1 InvEKF path and control stack are implemented in source, but the tree has no complete STM32Cube build project and has not been compiled or validated on target from this package. Barometer and magnetometer hardware drivers, MAVLink message generation, SD logging, current sensing, board initialization, and hardware tuning remain open work. Remove propellers during initial bring-up.
+> **Source status:** v1.1 contains the Mahony high-rate attitude path, a 24-state left-invariant InvEKF navigation filter, cascaded control, UBX GPS fusion, safety hooks, and a future NMPC-RTI interface scaffold. The package is not a complete STM32Cube firmware project and is not flight-qualified. The MS5611 and QMC5883L drivers, generated board project, MAVLink messages, SD logging, and hardware calibration remain unfinished.
 
 ---
 
-## System Architecture
+## System architecture
 
-Solid links show active source paths. Dotted links mark pending sensor hooks or included modules that are not connected to the runtime path.
+The diagram shows the intended final runtime architecture. It uses grouped lanes, semantic colors, and distinct component, process, and measurement shapes in the Myovena visual style. Solid links are wired in source; dashed links mark hardware feeds whose physical drivers are still pending. The full design, state machines, task sequences, and hardware boundary are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
   subgraph S["Sensors and pilot input"]
-    IMU["IMU<br/>LSM6DSV"]
-    GPS["GPS<br/>UBX NAV-PVT"]
-    BARO["Barometer<br/>driver pending"]
-    MAG["Magnetometer<br/>driver pending"]
-    RC["CRSF / ELRS"]
+    direction TB
+    IMU[/LSM6DSV IMU sample<br/>3840 Hz target/]
+    GPS{{UBX NAV-PVT message}}
+    BARO{{MS5611 measurement}}
+    MAG{{QMC5883L measurement}}
+    RC{{CRSF / ELRS frame}}
   end
 
   subgraph E["State estimation"]
-    INV["InvEKF<br/>15-state, active"]
-    MAHONY["Mahony AHRS<br/>source module, not scheduled"]
+    direction TB
+    MAH(["Mahony AHRS<br/>high-rate attitude pre-compute"])
+    INV(["InvEKF<br/>24-state navigation and calibration"])
+    NAV["NED position and velocity"]
   end
 
-  subgraph C["Flight control"]
-    FSM["Flight-mode FSM"]
-    POS["Position hold<br/>~50 Hz"]
-    VEL["Velocity controller<br/>~100 Hz"]
-    ATT["Attitude controller<br/>IMU rate"]
-    RATE["Rate controller<br/>IMU rate"]
+  subgraph C["Flight modes and control"]
+    direction TB
+    FSM(["Flight-mode FSM"])
+    POS(["Position loop<br/>~50 Hz"])
+    VEL(["Velocity loop<br/>~100 Hz"])
+    ATT(["Quaternion attitude loop<br/>IMU rate"])
+    RATE(["Body-rate loop<br/>IMU rate"])
   end
 
-  subgraph A["Actuation"]
-    MIX["Quad-X mixer"]
-    DSHOT["Bidirectional DShot300"]
-    MOTORS["ESCs and motors"]
+  subgraph O["Actuation"]
+    direction TB
+    MIX["Quad-X mixer<br/>desaturation"]
+    DSHOT{{Bidirectional DShot300}}
+    MOTOR["ESCs and motors"]
   end
 
+  IMU --> MAH
   IMU --> INV
-  IMU -. "module present, not scheduled" .-> MAHONY
+  MAH --> INV
   GPS --> INV
-  BARO -. "shared-state update hook" .-> INV
-  MAG -. "shared-state update hook" .-> INV
+  BARO -. "shared-state measurement hook" .-> INV
+  MAG -. "calibrated µT measurement hook" .-> MAH
+  MAG -. "calibrated µT measurement hook" .-> INV
   RC --> FSM
-  INV --> FSM
-  INV --> POS
-  INV --> VEL
-  INV --> ATT
+  INV --> NAV
+  NAV --> POS
+  NAV --> VEL
+  MAH --> ATT
+  MAH --> RATE
   FSM --> POS
   FSM --> VEL
   FSM --> ATT
@@ -60,206 +66,185 @@ flowchart LR
   ATT --> RATE
   RATE --> MIX
   MIX --> DSHOT
-  DSHOT --> MOTORS
+  DSHOT --> MOTOR
 
-  classDef sensors fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
-  classDef estimate fill:#059669,color:#fff,stroke:#34d399,stroke-width:2px
-  classDef inactive fill:#475569,color:#fff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
-  classDef control fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
-  classDef output fill:#ea580c,color:#fff,stroke:#fdba74,stroke-width:2px
-  class IMU,GPS,RC sensors
-  class BARO,MAG,MAHONY inactive
-  class INV estimate
-  class FSM,POS,VEL,ATT,RATE control
-  class MIX,DSHOT,MOTORS output
+  classDef hardware fill:#E9F2FF,color:#153D70,stroke:#4D82D1,stroke-width:2px
+  classDef system fill:#E7F7EF,color:#15553A,stroke:#35A578,stroke-width:2px
+  classDef sensing fill:#E4F7F5,color:#14524C,stroke:#3A9C91,stroke-width:2px
+  classDef config fill:#F3EDFF,color:#472D7A,stroke:#8764D8,stroke-width:2px
+  classDef safety fill:#FFF1E5,color:#794016,stroke:#E68A43,stroke-width:2px
+  classDef checks fill:#FFF5DC,color:#704A10,stroke:#D5A23C,stroke-width:2px,stroke-dasharray:5 4
+  class IMU sensing
+  class GPS,RC,DSHOT hardware
+  class MAH,INV,NAV,POS,VEL,ATT,RATE system
+  class FSM config
+  class MIX,MOTOR hardware
+  class BARO,MAG checks
+
+  linkStyle default stroke:#778295,stroke-width:2px
 ```
 
-The v1.1 system loop runs InvEKF for attitude and navigation. The Mahony AHRS implementation is also present in the source tree, but startup does not schedule it or route its output into the control loop.
+Mahony is deliberately retained as the fast attitude observer. It consumes every IMU sample and supplies attitude increments to InvEKF; the controller reads its low-latency attitude directly. InvEKF combines inertial propagation with GPS and any valid barometer or magnetometer data to estimate navigation and slower calibration states. This keeps the established high-rate attitude design while replacing the navigation Kalman filter.
+
+The current code has a UBX GPS parser and fusion path. Barometer and magnetometer tasks are measurement consumers: their hardware acquisition and calibration drivers still need to be supplied. The diagram marks those inputs as pending rather than implying they are already live sensors.
 
 ---
 
-## Features
+## Flight modes and control
 
-### Flight modes
+- **FPV / Acro:** receiver sticks command body angular rates; the inner rate loop drives the mixer.
+- **Camera / stabilized:** the cascaded position, velocity, attitude, and rate loops stabilize position or pilot-commanded velocity.
+- **Failsafe and landing:** safety events can request a bounded descent and the FSM checks its configured landing conditions. This source behavior still needs controlled validation.
 
-- **FPV / Acro:** pilot sticks command body angular rates; the rate loop drives the mixer.
-- **Camera / stabilized:** pilot sticks command velocity; velocity and attitude loops stabilize the aircraft. Position hold is available only when requested and a valid GPS fix is present.
-- **Failsafe and landing:** safety events can request failsafe; the FSM commands a bounded descent and checks barometer validity, altitude, and vertical speed before landing logic.
-
-These paths are present in source and still require simulation and hardware validation.
-
-### Control
-
-The camera-mode cascade is shown below. FPV / Acro bypasses position, velocity, and attitude control and sends pilot rate commands to the rate loop.
+The active cascade is:
 
 ```mermaid
 flowchart LR
-  PILOT["Pilot input"]
-  POS["Position PID<br/>~50 Hz"]
-  VEL["Velocity PID<br/>~100 Hz"]
-  ATT["Attitude controller<br/>IMU rate"]
-  RATE["Rate PID<br/>IMU rate"]
-  MIX["Quad-X mixer"]
-  DSHOT["DShot300"]
+  PILOT{{CRSF pilot command}}
+  POS(["Position hold<br/>~50 Hz"])
+  VEL(["Velocity PID<br/>~100 Hz"])
+  ATT(["Quaternion attitude<br/>IMU rate"])
+  RATE(["Rate PID<br/>IMU rate"])
+  MIX(["Quad-X mixer"])
+  ESC{{Bidirectional DShot300}}
   PLANT["Quadrotor"]
+  MODE{"Mode and hold conditions?"}
 
-  PILOT --> POS
-  POS --> VEL
-  VEL --> ATT
-  ATT --> RATE
-  RATE --> MIX
-  MIX --> DSHOT
-  DSHOT --> PLANT
-
-  classDef ctrl fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
-  classDef actuation fill:#ea580c,color:#fff,stroke:#fdba74,stroke-width:2px
-  classDef aircraft fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
-  class PILOT,POS,VEL,ATT,RATE ctrl
-  class MIX,DSHOT actuation
-  class PLANT aircraft
-
-  PLANT -. "NED position and velocity" .-> POS
-  PLANT -. "attitude and body rates" .-> ATT
+  PILOT --> MODE
+  MODE -->|Camera hold| POS --> VEL --> ATT --> RATE --> MIX --> ESC --> PLANT
+  MODE -->|Camera manual velocity| VEL
+  MODE -->|FPV / Acro rate target| RATE
+  PLANT -. "position and velocity" .-> POS
+  PLANT -. "attitude" .-> ATT
   PLANT -. "body rates" .-> RATE
+
+  classDef hardware fill:#E9F2FF,color:#153D70,stroke:#4D82D1,stroke-width:2px
+  classDef system fill:#E7F7EF,color:#15553A,stroke:#35A578,stroke-width:2px
+  classDef sensing fill:#E4F7F5,color:#14524C,stroke:#3A9C91,stroke-width:2px
+  classDef checks fill:#FFF5DC,color:#704A10,stroke:#D5A23C,stroke-width:2px
+  classDef safety fill:#FFF1E5,color:#794016,stroke:#E68A43,stroke-width:2px
+  class PILOT,ESC,PLANT hardware
+  class POS,VEL,ATT,RATE,MIX system
+  class MODE checks
+  linkStyle default stroke:#778295,stroke-width:2px
 ```
 
-- Cascaded position, velocity, attitude, and body-rate control.
-- Quaternion attitude error in the body frame.
-- PID derivative-on-measurement and integral anti-windup.
-- Quad-X mixing with collective headroom/desaturation.
-- DShot300 motor command path.
-- A future NMPC-RTI interface scaffold under drone_fc/src/control/future/; it has no solver and is not connected to motor output.
-
-### State estimation
-
-The active v1.1 estimation path is summarized below. Dotted paths show pending sensor inputs or source modules that are not scheduled.
-
-```mermaid
-flowchart LR
-  IMU["IMU<br/>implemented driver"]
-  GPS["GPS<br/>UBX NAV-PVT path"]
-  BARO["Barometer<br/>driver pending"]
-  MAG["Magnetometer<br/>driver pending"]
-  INV["InvEKF<br/>15-state, active"]
-  MAHONY["Mahony AHRS<br/>source module, not scheduled"]
-  STATE["NED position, velocity,<br/>body-to-NED attitude"]
-  CTRL["Flight controllers"]
-
-  IMU --> INV
-  IMU -. "module present, not scheduled" .-> MAHONY
-  GPS --> INV
-  BARO -. "update hook" .-> INV
-  MAG -. "update hook" .-> INV
-  INV --> STATE
-  STATE --> CTRL
-  classDef sensors fill:#2563eb,color:#fff,stroke:#60a5fa,stroke-width:2px
-  classDef estimate fill:#059669,color:#fff,stroke:#34d399,stroke-width:2px
-  classDef inactive fill:#475569,color:#fff,stroke:#94a3b8,stroke-width:2px,stroke-dasharray:5 5
-  classDef control fill:#7c3aed,color:#fff,stroke:#c4b5fd,stroke-width:2px
-  class IMU,GPS sensors
-  class BARO,MAG,MAHONY inactive
-  class INV,STATE estimate
-  class CTRL control
-```
-- **InvEKF:** 15-state right-invariant navigation filter, selected by the v1.1 system loop for attitude and navigation.
-- **Mahony AHRS:** source module is present for high-rate attitude estimation; it is not currently scheduled or connected to the v1.1 control loop.
-- High-rate nominal inertial propagation with decimated covariance prediction.
-- UBX NAV-PVT GPS parser and local NED position/velocity update path.
-- Barometer and magnetometer update methods and shared-state hooks; physical drivers and calibration are pending.
-
-### Embedded system
-
-- Target: STM32F722RET6, Cortex-M7, nominal 216 MHz.
-- RTOS-facing code uses CMSIS-RTOS v2 APIs.
-- IMU data-ready paced control loop, UART/EXTI callbacks, watchdog hook, and simulation state hooks.
-- Hardware abstraction is not a substitute for the missing generated HAL/CubeMX project; confirm DMA, IRQ, clocks, and pin configuration in the target project.
+The position loop is gated by the hold request and GPS validity. Without position hold, camera-mode sticks produce heading-relative velocity targets. FPV / Acro bypasses the outer loops. See [the control and estimator reference](drone_fc/process.md) for sign conventions and equations.
 
 ---
 
-## Repository Structure
+## State estimation
 
-The firmware is under drone_fc/:
+InvEKF retains the full **24 error coordinates**. The diagram shows how the high-rate attitude result and slower navigation measurements enter the estimator.
 
-- src/core/ — shared state, RTOS tasks, system startup, and callbacks.
-- src/math/ — vector and quaternion math.
-- src/estimation/ — active InvEKF navigation filter and Mahony AHRS source module.
-- src/drivers/ — LSM6DSV IMU driver and startup-calibration helper.
-- src/control/ — PID, rate, attitude, velocity, position, and future controller interface.
-- src/flight_modes/ — flight-mode state machine.
-- src/actuation/ — motor mixer and bidirectional DShot.
-- src/communication/ — CRSF and UBX parsers.
-- src/safety/ — monitor and fault handling.
-- src/simulation/ — HIL/SIL sensor and output hooks.
+```mermaid
+flowchart LR
+  RAW[/Raw gyro and accelerometer<br/>each IMU sample/]
+  MAH(["Mahony AHRS<br/>attitude pre-compute"])
+  NAV(["InvEKF propagation<br/>24-state nominal model"])
+  COV(["Covariance prediction<br/>every 8 IMU samples"])
+  GPS{{UBX position and velocity}}
+  BARO{{Relative altitude}}
+  MAG{{Calibrated magnetic field}}
+  STATES(["NED position and velocity<br/>plus 24-state covariance"])
+  FAST(["Fast attitude control<br/>Mahony quaternion"])
 
-## Documentation
+  RAW --> MAH --> FAST
+  RAW --> NAV
+  MAH --> NAV --> COV --> STATES
+  GPS --> NAV
+  BARO -. "when sample is valid" .-> NAV
+  MAG -. "when sample is valid" .-> NAV
 
-| Document | Description |
-|---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System data flow, scheduling, and subsystem implementation status |
-| [Flight-controller setup](drone_fc/README.md) | Runtime rates, integration steps, and remaining hardware work |
-| [Control and estimator reference](drone_fc/process.md) | Frames, loop equations, estimator architecture, and validation order |
-| [Pin allocation](drone_fc/src/pins.md) | Intended pin map and unresolved board conflicts |
-| [NMPC-RTI scaffold](drone_fc/src/control/future/README.md) | Scope and requirements for future solver integration |
+  classDef hardware fill:#E9F2FF,color:#153D70,stroke:#4D82D1,stroke-width:2px
+  classDef system fill:#E7F7EF,color:#15553A,stroke:#35A578,stroke-width:2px
+  classDef sensing fill:#E4F7F5,color:#14524C,stroke:#3A9C91,stroke-width:2px
+  classDef checks fill:#FFF5DC,color:#704A10,stroke:#D5A23C,stroke-width:2px
+  class RAW,STATES sensing
+  class GPS hardware
+  class BARO,MAG checks
+  class MAH,NAV,COV,FAST system
+  linkStyle default stroke:#778295,stroke-width:2px
+```
 
-## Hardware
+The 24 coordinates cover attitude, velocity, position, gyro bias, accelerometer bias, motor time constant, three-axis magnetometer bias, barometer bias, barometer scale, and three-axis NED wind. GPS fixes must have a valid 3D NAV-PVT fix, at least six satellites, and position DOP no greater than five by default. Only measurements with valid, correctly scaled inputs should update a state; APIs for motor lag and wind priors exist, but the runtime does not infer either from uncalibrated actuator commands.
 
-| Component | Intended device/interface | Current software status |
+---
+
+## Embedded target and source layout
+
+The target configuration assumes an STM32F722RET6 at 216 MHz with CMSIS-RTOS v2-facing task code, IMU data-ready pacing, peripheral callbacks, and a watchdog hook. The generated STM32Cube project, clock and DMA setup, board schematic, and target build files are not included here, so pin assignments and nominal rates remain integration targets.
+
+```text
+drone_fc/
+├── inc/                  Target configuration and pin macros
+├── src/
+│   ├── core/             Shared state, RTOS tasks, system entry points
+│   ├── math/             Fixed-size vectors and quaternions
+│   ├── estimation/       Mahony AHRS and 24-state InvEKF
+│   ├── drivers/          IMU and startup-calibration support
+│   ├── communication/    CRSF and UBX parsers
+│   ├── control/          PID cascade and future/NMPC-RTI scaffold
+│   ├── flight_modes/     FPV, camera, failsafe, landing state machine
+│   ├── actuation/        Quad-X mixer and bidirectional DShot
+│   ├── safety/           Fault checks and watchdog integration
+│   └── simulation/       HIL/SIL state and motor-output hooks
+├── process.md            Estimation and controller equations
+└── README.md             Firmware integration and status guide
+```
+
+The code is grouped by subsystem so estimation, control, communication, and actuation can be developed independently. [ARCHITECTURE.md](ARCHITECTURE.md) provides the expanded diagrams and data-flow explanation.
+
+### Current implementation status
+
+Source paths include the LSM6DSV driver, CRSF and UBX parsers, Mahony, InvEKF, cascaded PID controllers, flight-mode FSM, mixer, DShot interface, safety checks, and HIL/SIL hooks. Still needed are the physical barometer and magnetometer drivers, a complete generated target project, startup-calibration integration, MAVLink message generation, FatFS logging, current sensing, calibrated motor/ESC models, and hardware validation.
+
+The [NMPC-RTI folder](drone_fc/src/control/future/README.md) is a fixed-interface scaffold. It has no optimization backend and is not connected to the active PID controller.
+
+## Hardware reference
+
+| Component | Intended part or interface | Source status |
 |---|---|---|
-| MCU | STM32F722RET6, LQFP64 | Target assumed by configuration |
-| IMU | LSM6DSV320XTR, SPI1 | Driver source present; target validation pending |
+| MCU | STM32F722RET6, LQFP64 | Target assumption in configuration |
+| IMU | LSM6DSV320XTR, SPI1 | Driver source present; verify scale and axes on target |
 | Barometer | MS5611, SPI1 | Driver not implemented |
-| Magnetometer | QMC5883L, I2C1 | Driver/calibration not implemented |
-| GPS | UBX receiver, USART1 | NAV-PVT parser and estimator path present |
-| RC receiver | CRSF / ELRS, USART2 | Parser/task source present |
-| ESC protocol | Bidirectional DShot300 | Output path present; telemetry conversion/board timing need validation |
+| Magnetometer | QMC5883L, I2C1 | Driver and calibration not implemented |
+| GPS | UBX receiver, USART1 | NAV-PVT parser and fusion path present |
+| RC receiver | CRSF / ELRS, USART2 | Parser and task source present |
+| ESC protocol | Bidirectional DShot300 | Output source present; target timing and telemetry need validation |
 | Telemetry | MAVLink over USB CDC | Task placeholder; message generation not implemented |
 | Logging | microSD over SPI2 | Task placeholder; FatFS integration not implemented |
 
-The intended pin assignment is summarized in [pins.md](drone_fc/src/pins.md). Check that file against the actual schematic before wiring or creating the CubeMX configuration.
+Use [the pin allocation guide](drone_fc/src/pins.md) as a firmware-side proposal and reconcile it with the PCB schematic before connecting hardware.
 
-## Development Roadmap
+## Documentation
 
-### Core source paths
+| Document | What it covers |
+|---|---|
+| [Architecture](ARCHITECTURE.md) | Final planned runtime, colored data-flow diagrams, task boundaries, and integration status |
+| [Firmware setup](drone_fc/README.md) | Source package scope, rates, target integration, and remaining work |
+| [Control and estimator reference](drone_fc/process.md) | Frames, all 24 InvEKF states, update models, control signs, and tuning order |
+| [Pin allocation](drone_fc/src/pins.md) | Intended pin map and unresolved board conflicts |
+| [NMPC-RTI scaffold](drone_fc/src/control/future/README.md) | Future optimizer interface and work needed before integration |
 
-- [x] IMU driver source
-- [x] CRSF parser and receiver timeout
-- [x] Cascaded PID controller and flight-mode FSM
-- [x] InvEKF and Mahony AHRS source modules
-- [x] UBX NAV-PVT parser and GPS fusion path
-- [x] DShot command and mixer source
-- [x] HIL/SIL state hooks
-- [x] NMPC-RTI interface scaffold
+## Development roadmap
 
-A checked item means source exists; it does not mean it has passed target or flight validation.
+- [x] High-rate Mahony attitude path and InvEKF navigation fusion path
+- [x] 24-state estimator model and optional sensor/update APIs
+- [x] Cascaded control, flight-mode FSM, mixer, and DShot source
+- [x] UBX NAV-PVT parser and GPS position/velocity fusion path
+- [x] Future NMPC-RTI interface scaffold
+- [ ] Complete STM32Cube/HAL/RTOS target project and verify peripheral setup
+- [ ] Implement MS5611 and QMC5883L hardware acquisition and calibration
+- [ ] Integrate startup calibration with bounded timeout and failure handling
+- [ ] Complete MAVLink transport and SD/FatFS logging
+- [ ] Add current sensing, battery calibration, and calibrated actuator models
+- [ ] Tune and validate estimates, controls, safety transitions, and DShot behavior on target
 
-### Integration and research work
+## Project goals
 
-- [ ] Complete STM32Cube/HAL/RTOS build project and peripheral initialization
-- [ ] MS5611 and QMC5883L hardware drivers and calibration
-- [ ] MAVLink message generation and USB transport
-- [ ] SD/FatFS logging and log schema
-- [ ] Current sensing, battery calibration, and telemetry
-- [ ] Startup gyro calibration with timeout and failure handling
-- [ ] Validate DShot telemetry decoding, ESC response, motor order, and direction
-- [ ] Bench identification of mass, inertia, thrust, and motor response
-- [ ] Tune controller and estimator parameters using measured data
-- [ ] Validate failsafe and landing behavior in simulation, HIL, and restrained bench tests
-- [ ] Add and validate return-to-home or rangefinder functions if required
-- [ ] Implement and target-validate an NMPC solver before connecting the future scaffold
-
-## Project Goals
-
-This project is a long-term engineering platform for investigating:
-
-- Flight dynamics and multirotor actuation
-- Classical and modern control
-- Sensor fusion and state estimation
-- Embedded software architecture and deterministic real-time systems
-- Robotics, simulation, and digital twins
-
-The emphasis is on understanding the mathematics and engineering principles behind autonomous systems, while keeping implementation status and validation evidence explicit.
+Drone OS is a long-term platform for flight dynamics, control theory, sensor fusion, embedded architecture, real-time execution, robotics, and simulation. It is intended to make the engineering assumptions visible and testable rather than imply validation from source code alone.
 
 ## License
 
-This project includes [LICENSE.txt](LICENSE.txt).
-
+This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).

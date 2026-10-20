@@ -24,6 +24,15 @@ void SafetyMonitor::update(uint32_t tick_ms){
 
 void SafetyMonitor::checkIMU(uint32_t){
     uint32_t cur=g_state.imuDrdyCount;
+    osMutexAcquire(g_state.imuMtx,osWaitForever);
+    const bool readError=g_state.imuReadError;
+    osMutexRelease(g_state.imuMtx);
+    if(readError){
+        drdyStallMs_=0;
+        prevDrdyCount_=cur;
+        triggerMotorKill(FC_ERR_IMU);
+        return;
+    }
     if(cur==prevDrdyCount_){
         drdyStallMs_+=10;
         if(drdyStallMs_>=20) triggerMotorKill(FC_ERR_IMU);
@@ -73,7 +82,7 @@ void SafetyMonitor::checkBattery(){
 
 void SafetyMonitor::checkGeofence(){
     /* BUG FIX #10: Original used raw lat/lon deltas (1° ≈ 111 km — wrong units).
-     * Now uses EKF NED position in metres from the home origin. */
+     * Uses InvEKF NED position in metres from the home origin. */
     osMutexAcquire(g_state.gpsMtx,osWaitForever);
     const GPSData gps=g_state.gps;
     const NavOrigin origin=g_state.origin;

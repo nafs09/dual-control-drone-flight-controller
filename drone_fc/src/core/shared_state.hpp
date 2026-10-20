@@ -47,6 +47,7 @@ struct MotorTelemetry {
 struct SharedState {
     /* ---- IMU raw (body FRD, SI) ------------------------------- */
     Vector3f gyro_rps, accel_mps2, gyro_raw_rps;
+    bool imuReadError = false;
     osMutexId_t imuMtx;
 
     /* ---- AHRS ------------------------------------------------- */
@@ -55,7 +56,7 @@ struct SharedState {
     float       headingMag_deg;
     osMutexId_t ahMtx;
 
-    /* ---- EKF navigation state --------------------------------- */
+    /* ---- InvEKF navigation state ------------------------------- */
     Vector3f position_ned, velocity_ned;
     osMutexId_t navMtx;
 
@@ -73,8 +74,9 @@ struct SharedState {
     NavOrigin  origin;
 
     /* ---- Magnetometer ----------------------------------------- */
-    Vector3f mag_normalised;
-    Vector3f mag_reference_ned;
+    /* Calibrated magnetic vectors in microtesla. Mahony normalises internally. */
+    Vector3f mag_body_uT;
+    Vector3f mag_reference_ned_uT;
     bool magValid;
     uint32_t magGeneration;
     osMutexId_t magMtx;
@@ -132,6 +134,7 @@ struct SharedState {
         imuDrdySem= osSemaphoreNew(1,0,nullptr);
 
         attitude  = Quaternionf::identity();
+        imuReadError = false;
         armState  = ArmState::DISARMED;
         mode      = FlightMode::DISARMED;
         errorFlags= 0;
@@ -143,7 +146,7 @@ struct SharedState {
         baroGeneration=0;
         magValid=false;
         magGeneration=0;
-        mag_normalised=mag_reference_ned=Vector3f::zero();
+        mag_body_uT=mag_reference_ned_uT=Vector3f::zero();
         battery={0.0f,0.0f,0.0f,0};
         avgMotorFreqHz = avgMotorFreqHz2 = 0.f;
         for(auto&m:motorCmd) m=0;

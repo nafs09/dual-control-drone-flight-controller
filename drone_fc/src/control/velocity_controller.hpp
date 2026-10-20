@@ -30,7 +30,7 @@ using Math::Vector3f;
  *
  *   Given a desired NED velocity (from position controller or from
  *   RC sticks mapped to velocity) and a measured NED velocity (from
- *   the EKF), compute a desired horizontal tilt in body frame that
+ *   InvEKF), compute a desired horizontal tilt in body frame that
  *   will accelerate the drone to match the setpoint.
  *
  *   Physics:  a_horizontal = g * tan(tilt) ≈ g * tilt  (small angles)
@@ -85,7 +85,7 @@ using Math::Vector3f;
  *   2. Tune attitude P gain.
  *   3. Tune velocity Kp until drone follows velocity setpoints without lag.
  *   4. Add Ki until wind drift is eliminated (watch integrator windup).
- *   5. Leave Kd = 0 unless EKF velocity estimate is very clean.
+ *   5. Leave Kd = 0 unless InvEKF velocity estimate is very clean.
  */
 class VelocityController {
 public:
@@ -93,7 +93,7 @@ public:
         /* Horizontal (N and E symmetric) */
         float kp     = 1.5f;    /**< (m/s²) per (m/s) velocity error          */
         float ki     = 0.3f;    /**< Wind rejection integral                   */
-        float kd     = 0.0f;    /**< Usually 0 — EKF velocity is already smooth*/
+        float kd     = 0.0f;    /**< Usually 0 — InvEKF velocity is already smooth*/
         float i_max  = 5.0f;    /**< Integrator state clamp [m/s²]            */
         float out_max= 9.81f;   /**< Max desired accel = g → max 45° tilt     */
         float tau_d  = 0.02f;   /**< D-term filter time constant               */
@@ -133,7 +133,7 @@ public:
      * @brief  Compute desired tilt from velocity error.
      *
      * @param vel_sp     Desired NED velocity [m/s].  z is positive-down (NED).
-     * @param vel_meas   EKF NED velocity [m/s].
+     * @param vel_meas   InvEKF NED velocity [m/s].
      * @param yaw_rad    Current heading, NED convention [rad].
      * @param dt         Time step [s].
      * @return           Desired body-frame tilt and throttle delta.

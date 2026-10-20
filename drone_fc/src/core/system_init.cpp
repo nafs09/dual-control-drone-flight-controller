@@ -2,6 +2,7 @@
 #include "../core/shared_state.hpp"
 #include "../drivers/lsm6dsv.hpp"
 #include "../estimation/invariant_ekf.hpp"
+#include "../estimation/mahony_ahrs.hpp"
 #include "../flight_modes/flight_mode_fsm.hpp"
 #include "../communication/crsf.hpp"
 #include "../communication/ubx_parser.hpp"
@@ -60,6 +61,7 @@ SharedState g_state;
 
 static Drivers::LSM6DSV           g_imu;
 static Estimation::InvEKF         g_inekf;
+static Estimation::MahonyAHRS     g_mahony;
 static FlightModes::FlightModeFSM g_fsm;
 static Communication::CRSFParser  g_crsf;
 static Communication::UBXParser   g_ubx;
@@ -69,6 +71,18 @@ static uint8_t g_gpsRxByte = 0;
 static uint8_t g_gpsRxRing[256] = {};
 static volatile uint16_t g_gpsRxHead = 0, g_gpsRxTail = 0;
 static volatile uint32_t g_gpsRxOverruns = 0;
+
+/* Copy the navigation filter's gyro-bias estimate into the high-rate AHRS.
+ * Mutexes are acquired separately so no code takes navMtx and ahMtx at once. */
+static void syncMahonyGyroBiasFromInvEKF() {
+    Vector3f bias;
+    osMutexAcquire(g_state.navMtx, osWaitForever);
+    bias = g_inekf.getGyroBias();
+    osMutexRelease(g_state.navMtx);
+    osMutexAcquire(g_state.ahMtx, osWaitForever);
+    g_mahony.setGyroBias(bias);
+    osMutexRelease(g_state.ahMtx);
+}
 
 static void gpsRxPushFromIsr(uint8_t byte) {
     const uint16_t head = g_gpsRxHead;
@@ -172,6 +186,7 @@ extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef* h) {
  * ============================================================ */
 static void ControlLoopTask(void* /*arg*/) {
     osDelay(100);   /* Let sensors stabilise */
+    g_mahony.reset(Quaternionf::identity());
     g_inekf.init({0,0,0}, {0,0,0}, Quaternionf::identity());
 
     uint32_t tPrev = dwt_us();
@@ -189,36 +204,71 @@ static void ControlLoopTask(void* /*arg*/) {
 
         /* 1. Read IMU from hardware or the injected simulation sample. */
         Vector3f gyro, accel;
+        bool imuSampleValid = true;
         if (Simulation::SimInterface::isSimulation()) {
             osMutexAcquire(g_state.imuMtx, osWaitForever);
-            gyro = g_state.gyro_rps; accel = g_state.accel_mps2;
+            gyro = g_state.gyro_raw_rps; accel = g_state.accel_mps2;
             osMutexRelease(g_state.imuMtx);
         } else {
-            (void)g_imu.readRaw(gyro, accel);
+            imuSampleValid = g_imu.readRaw(gyro, accel);
         }
-        osMutexAcquire(g_state.imuMtx, osWaitForever);
-        g_state.gyro_rps   = gyro;
-        g_state.accel_mps2 = accel;
-        osMutexRelease(g_state.imuMtx);
-
-        /* 2. Right-invariant EKF: propagate nominal state at IMU rate. */
+        if (!imuSampleValid) {
+            osMutexAcquire(g_state.imuMtx, osWaitForever);
+            g_state.imuReadError = true;
+            osMutexRelease(g_state.imuMtx);
+            osMutexAcquire(g_state.safetyMtx, osWaitForever);
+            g_state.errorFlags |= FC_ERR_IMU;
+            g_state.killMotors = true;
+            osMutexRelease(g_state.safetyMtx);
+            const uint16_t stop[4] = {0, 0, 0, 0};
+            osMutexAcquire(g_state.motMtx, osWaitForever);
+            for (int i = 0; i < 4; ++i) g_state.motorCmd[i] = stop[i];
+            osMutexRelease(g_state.motMtx);
+            if (Simulation::SimInterface::isSimulation())
+                Simulation::SimInterface::exportMotors(stop);
+            else if (g_dshotReady)
+                Drivers::DShot::sendMotors(stop);
+            g_state.ctrlLoopUs = dwt_us() - t0;
+            continue;
+        }
+        /* 2. Mahony pre-computes a low-latency attitude from every IMU
+         * sample. InvEKF consumes its attitude increment while estimating
+         * the full navigation and calibration state. */
         static uint8_t ekfDecim = 0;
-        static uint8_t gravityDecim = 0;
         Quaternionf att;
+        Vector3f mahonyBias;
+        osMutexAcquire(g_state.ahMtx, osWaitForever);
+        g_mahony.updateIMU(gyro, accel, dt);
+        att = g_mahony.getAttitude();
+        mahonyBias = g_mahony.getGyroBias();
+        osMutexRelease(g_state.ahMtx);
+
+        bool predicted = false;
+        Vector3f ekfGyroBias;
         osMutexAcquire(g_state.navMtx, osWaitForever);
-        g_inekf.accumulateIMU(accel, gyro, dt);
-        if (++gravityDecim >= (CTRL_LOOP_HZ / 100U)) {
-            gravityDecim = 0;
-            g_inekf.updateGravity(accel);
-        }
+        g_inekf.accumulateIMU(accel, gyro, att, dt);
         if (++ekfDecim >= 8) {
             ekfDecim = 0;
             g_inekf.predict(dt * 8.f);
             g_state.position_ned = g_inekf.getPosition();
             g_state.velocity_ned = g_inekf.getVelocity();
+            ekfGyroBias = g_inekf.getGyroBias();
+            predicted = true;
         }
-        att = g_inekf.getAttitude();
         osMutexRelease(g_state.navMtx);
+
+        if (predicted) {
+            osMutexAcquire(g_state.ahMtx, osWaitForever);
+            g_mahony.setGyroBias(ekfGyroBias);
+            mahonyBias = g_mahony.getGyroBias();
+            osMutexRelease(g_state.ahMtx);
+        }
+        osMutexAcquire(g_state.imuMtx, osWaitForever);
+        g_state.imuReadError = false;
+        g_state.gyro_raw_rps = gyro;
+        g_state.gyro_rps = gyro - mahonyBias;
+        g_state.accel_mps2 = accel;
+        osMutexRelease(g_state.imuMtx);
         osMutexAcquire(g_state.ahMtx, osWaitForever);
         g_state.attitude  = att;
         g_state.euler_deg = att.toEulerRPY() * (180.f / 3.14159265f);
@@ -275,6 +325,7 @@ static void BaroTask(void* /*arg*/) {
             g_state.position_ned = g_inekf.getPosition();
             g_state.velocity_ned = g_inekf.getVelocity();
             osMutexRelease(g_state.navMtx);
+            syncMahonyGyroBiasFromInvEKF();
         }
     }
 }
@@ -292,14 +343,19 @@ static void MagTask(void* /*arg*/) {
         osMutexAcquire(g_state.magMtx, osWaitForever);
         const bool valid = g_state.magValid;
         const uint32_t generation = g_state.magGeneration;
-        const Vector3f magBody = g_state.mag_normalised;
-        const Vector3f magNed = g_state.mag_reference_ned;
+        const Vector3f magBody = g_state.mag_body_uT;
+        const Vector3f magNed = g_state.mag_reference_ned_uT;
         osMutexRelease(g_state.magMtx);
         if (valid && generation != lastGeneration) {
             lastGeneration = generation;
+            osMutexAcquire(g_state.ahMtx, osWaitForever);
+            if (magNed.norm() > 1.0e-3f) g_mahony.setMagReference(magNed);
+            g_mahony.updateMag(magBody);
+            osMutexRelease(g_state.ahMtx);
             osMutexAcquire(g_state.navMtx, osWaitForever);
             g_inekf.updateMag(magBody, magNed);
             osMutexRelease(g_state.navMtx);
+            syncMahonyGyroBiasFromInvEKF();
         }
     }
 }
@@ -336,6 +392,7 @@ static void GPSTask(void* /*arg*/) {
                 g_state.position_ned = g_inekf.getPosition();
                 g_state.velocity_ned = g_inekf.getVelocity();
                 osMutexRelease(g_state.navMtx);
+                syncMahonyGyroBiasFromInvEKF();
             }
             const uint32_t now = osKernelGetTickCount();
             const bool stale = !haveFix || !latestFixValid ||
@@ -365,7 +422,8 @@ static void GPSTask(void* /*arg*/) {
             gps.sAcc_mps = fix.speed_accuracy_mps;
             gps.positionDop = fix.position_dop;
             gps.numSats = fix.satellites;
-            gps.fixValid = fix.fix_valid;
+            gps.fixValid = fix.fix_valid &&
+                           g_inekf.gpsQualityAcceptable(gps.positionDop, gps.numSats);
             gps.lastUpdateMs = osKernelGetTickCount();
             latestFixValid = gps.fixValid;
             if (latestFixValid) {
@@ -398,6 +456,7 @@ static void GPSTask(void* /*arg*/) {
                 g_state.position_ned = g_inekf.getPosition();
                 g_state.velocity_ned = g_inekf.getVelocity();
                 osMutexRelease(g_state.navMtx);
+                syncMahonyGyroBiasFromInvEKF();
                 setGpsError(false);
             } else {
                 setGpsError(true);
