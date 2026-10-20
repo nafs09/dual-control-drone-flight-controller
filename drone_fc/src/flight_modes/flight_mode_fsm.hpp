@@ -74,6 +74,24 @@ public:
     ArmState   getArm()   const { return g_state.armState; }
 
 private:
+    /* Internal execution states refined under the shared FlightMode
+     * governance enum. FlightMode remains authoritative for mode changes;
+     * this state tracks the work performed within each governed mode. */
+    enum class ExecutionSubstate : uint8_t {
+        DISARMED_IDLE,
+        PREARM_QUALIFICATION,
+        ARMED_IDLE,
+        FPV_RATE_CONTROL,
+        CAMERA_MANUAL_VELOCITY,
+        CAMERA_POSITION_CAPTURE,
+        CAMERA_POSITION_HOLD,
+        FAILSAFE_ENTRY,
+        FAILSAFE_DESCENT_RAMP,
+        FAILSAFE_DESCENT,
+        LANDING_THROTTLE_RAMP,
+        OUTPUT_INHIBITED
+    };
+
     /* ---- Sub-controllers ----------------------------------- */
     RateController     rateCtrl_;
     AttitudeController attCtrl_;
@@ -119,10 +137,11 @@ private:
     uint32_t   armHoldStartTick_ = 0;
     bool       armHoldActive_ = false;
     float      fsDescentRate_ = 0.f;
-    bool       positionHoldActive_ = false;
+    ExecutionSubstate executionSubstate_ = ExecutionSubstate::DISARMED_IDLE;
 
     static constexpr uint32_t kArmHoldMs = 500u;
-    static constexpr float    kFsDescentRps = 0.5f;
+    static constexpr float    kFsDescentAccel_mps2 = 0.5f;
+    static constexpr float    kFsDescentMax_mps = 0.8f;
 };
 
 }} // FC::FlightModes

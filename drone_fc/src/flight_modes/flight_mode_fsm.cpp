@@ -44,16 +44,17 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
     /* SafetyMonitor may enter FAILSAFE asynchronously (for battery/fence
      * faults). Initialise the autonomous descent on the transition itself. */
     if (g_state.mode == FlightMode::FAILSAFE && prevMode_ != FlightMode::FAILSAFE) {
+        executionSubstate_ = ExecutionSubstate::FAILSAFE_ENTRY;
         rateCtrl_.setPreset(RateController::cameraPreset());
         mixer_.setConfig(Mixer::cameraConfig());
         mixer_.enableMotors(true);
         attCtrl_.captureYaw(attitude.toEulerRPY().z);
         velCtrl_.reset();
         posCtrl_.reset();
-        positionHoldActive_ = false;
         desiredRoll_rad_ = desiredPitch_rad_ = velThrustDelta_ = 0.0f;
         fsDescentRate_ = 0.0f;
         velSetpoint_ned_ = {0.0f, 0.0f, 0.0f};
+        executionSubstate_ = ExecutionSubstate::FAILSAFE_DESCENT_RAMP;
     }
 
     /* GPS position hold is a 50 Hz outer loop. Run it before the 100 Hz
@@ -65,6 +66,7 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
 
     /* Hard kill overrides everything */
     if (killMotors) {
+        executionSubstate_ = ExecutionSubstate::OUTPUT_INHIBITED;
         uint16_t z[4]={0,0,0,0};
         osMutexAcquire(g_state.motMtx, osWaitForever);
         for(int i=0;i<4;i++) g_state.motorCmd[i]=z[i];
@@ -100,14 +102,22 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
             const bool gpsFixValid = g_state.gps.fixValid;
             osMutexRelease(g_state.gpsMtx);
             if (g_state.mode == FlightMode::FAILSAFE) {
-                fsDescentRate_ = std::fmin(0.8f, fsDescentRate_ + kFsDescentRps * dt_vel);
+                fsDescentRate_ = std::fmin(kFsDescentMax_mps,
+                    fsDescentRate_ + kFsDescentAccel_mps2 * dt_vel);
                 velSetpoint_ned_ = {0.f, 0.f, fsDescentRate_};
+                executionSubstate_ = fsDescentRate_ >= kFsDescentMax_mps
+                    ? ExecutionSubstate::FAILSAFE_DESCENT
+                    : ExecutionSubstate::FAILSAFE_DESCENT_RAMP;
             } else if (!rc.altHold || !gpsFixValid) {
                 /* No GPS hold: map sticks to NED velocity setpoint */
+                executionSubstate_ = ExecutionSubstate::CAMERA_MANUAL_VELOCITY;
                 velSetpoint_ned_ = VelocityController::sticksToVelSetpoint(
                     rc.pitch, rc.roll, yaw, CAM_MAX_VEL_HORIZ);
                 /* Vertical: throttle stick → vertical velocity */
                 velSetpoint_ned_.z = -(rc.throttle * 2.f - 1.f) * CAM_MAX_VEL_VERT;
+            } else if (executionSubstate_ != ExecutionSubstate::CAMERA_POSITION_HOLD) {
+                /* The 50 Hz position task captures the setpoint on its next tick. */
+                executionSubstate_ = ExecutionSubstate::CAMERA_POSITION_CAPTURE;
             }
             /* else: velSetpoint_ned_ was set by updatePositionLoop() */
 
@@ -122,6 +132,8 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
     switch (g_state.mode) {
 
     case FlightMode::DISARMED:
+        if (executionSubstate_ != ExecutionSubstate::PREARM_QUALIFICATION)
+            executionSubstate_ = ExecutionSubstate::DISARMED_IDLE;
         { uint16_t k[4]={0,0,0,0};
           osMutexAcquire(g_state.motMtx, osWaitForever);
           for(int i=0;i<4;i++) g_state.motorCmd[i]=k[i];
@@ -131,6 +143,7 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
         break;
 
     case FlightMode::ARMED:
+        executionSubstate_ = ExecutionSubstate::ARMED_IDLE;
         { uint16_t id[4];
           mixer_.idle(id);
           osMutexAcquire(g_state.motMtx, osWaitForever);
@@ -146,6 +159,7 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
         if (!rc.valid)       { handleFailsafe(); break; }
         if (!rc.armSwitch)   { tryDisarm();      break; }
         if (rc.modeSwitch)   { enterCamera();    break; }
+        executionSubstate_ = ExecutionSubstate::FPV_RATE_CONTROL;
         runFPV(dt, gyro);
         break;
 
@@ -171,11 +185,13 @@ void FlightModeFSM::update(float dt, InvEKF& ekf) {
         break;
 
     case FlightMode::LANDING:
+        executionSubstate_ = ExecutionSubstate::LANDING_THROTTLE_RAMP;
         landingThrottle_ -= 0.2f * dt;
         if (landingThrottle_ < 0.f) {
             landingThrottle_ = 0.f;
             g_state.mode     = FlightMode::DISARMED;
             g_state.armState = ArmState::DISARMED;
+            executionSubstate_ = ExecutionSubstate::DISARMED_IDLE;
             mixer_.enableMotors(false);
         } else {
             Vector3f torque = rateCtrl_.update({0,0,0}, gyro, dt);
@@ -274,7 +290,7 @@ void FlightModeFSM::updatePositionLoop(float dt, const InvEKF& ekf) {
     const bool gpsFixValid = g_state.gps.fixValid;
     osMutexRelease(g_state.gpsMtx);
     if (!rc.altHold || !gpsFixValid) {
-        positionHoldActive_ = false;
+        executionSubstate_ = ExecutionSubstate::CAMERA_MANUAL_VELOCITY;
         return;
     }
 
@@ -282,9 +298,10 @@ void FlightModeFSM::updatePositionLoop(float dt, const InvEKF& ekf) {
     const Vector3f pos = ekf.getPosition();
     const Vector3f vel = ekf.getVelocity();
     osMutexRelease(g_state.navMtx);
-    if (!positionHoldActive_) {
+    if (executionSubstate_ != ExecutionSubstate::CAMERA_POSITION_HOLD) {
+        executionSubstate_ = ExecutionSubstate::CAMERA_POSITION_CAPTURE;
         posCtrl_.captureSetpoint(pos);
-        positionHoldActive_ = true;
+        executionSubstate_ = ExecutionSubstate::CAMERA_POSITION_HOLD;
     }
     velSetpoint_ned_ = posCtrl_.update(pos, vel, dt);
 }
@@ -321,9 +338,16 @@ void FlightModeFSM::tryArm() {
             mixer_.enableMotors(true);
             rateCtrl_.reset(); attCtrl_.reset();
             velCtrl_.reset();  posCtrl_.reset();
+            executionSubstate_=ExecutionSubstate::ARMED_IDLE;
             armHoldActive_=false; modeEntryMs_=osKernelGetTickCount();
+        } else {
+            executionSubstate_=ExecutionSubstate::PREARM_QUALIFICATION;
         }
-    } else { armHoldActive_=false; }
+    } else {
+        armHoldActive_=false;
+        if (executionSubstate_ == ExecutionSubstate::PREARM_QUALIFICATION)
+            executionSubstate_=ExecutionSubstate::DISARMED_IDLE;
+    }
 }
 
 void FlightModeFSM::tryDisarm() {
@@ -332,6 +356,7 @@ void FlightModeFSM::tryDisarm() {
     osMutexRelease(g_state.rcMtx);
     if (!rc.armSwitch || !rc.valid) {
         g_state.mode=FlightMode::DISARMED; g_state.armState=ArmState::DISARMED;
+        executionSubstate_=ExecutionSubstate::DISARMED_IDLE;
         mixer_.enableMotors(false);
         rateCtrl_.reset(); attCtrl_.reset(); velCtrl_.reset(); posCtrl_.reset();
     }
@@ -342,7 +367,9 @@ void FlightModeFSM::enterFPV() {
     mixer_.setConfig(Mixer::fpvConfig()); mixer_.enableMotors(true);
     /* Reset outer loops — not needed in FPV but clean state for next switch */
     velCtrl_.reset(); attCtrl_.reset();
-    g_state.mode=FlightMode::FPV; modeEntryMs_=osKernelGetTickCount();
+    g_state.mode=FlightMode::FPV;
+    executionSubstate_=ExecutionSubstate::FPV_RATE_CONTROL;
+    modeEntryMs_=osKernelGetTickCount();
 }
 
 void FlightModeFSM::enterCamera() {
@@ -358,7 +385,8 @@ void FlightModeFSM::enterCamera() {
     osMutexAcquire(g_state.navMtx, osWaitForever);
     velSetpoint_ned_=g_state.velocity_ned;
     osMutexRelease(g_state.navMtx);
-    velCtrl_.reset(); posCtrl_.reset(); positionHoldActive_=false;
+    velCtrl_.reset(); posCtrl_.reset();
+    executionSubstate_=ExecutionSubstate::CAMERA_MANUAL_VELOCITY;
     desiredRoll_rad_=0.f; desiredPitch_rad_=0.f; velThrustDelta_=0.f;
     g_state.mode=FlightMode::CAMERA; modeEntryMs_=osKernelGetTickCount();
 }
@@ -366,6 +394,7 @@ void FlightModeFSM::enterCamera() {
 void FlightModeFSM::enterLanding() {
     landingThrottle_=g_state.thrustOutput;
     g_state.mode=FlightMode::LANDING;
+    executionSubstate_=ExecutionSubstate::LANDING_THROTTLE_RAMP;
 }
 
 void FlightModeFSM::handleFailsafe() {
@@ -375,14 +404,17 @@ void FlightModeFSM::handleFailsafe() {
     const float yaw = g_state.attitude.toEulerRPY().z;
     osMutexRelease(g_state.ahMtx);
     attCtrl_.captureYaw(yaw);
-    velCtrl_.reset(); posCtrl_.reset(); positionHoldActive_=false;
+    velCtrl_.reset(); posCtrl_.reset();
     desiredRoll_rad_=desiredPitch_rad_=velThrustDelta_=0.0f;
     /* Zero velocity setpoint: hover in place and descend slowly */
     velSetpoint_ned_={0.f,0.f, 0.f};
-    g_state.mode=FlightMode::FAILSAFE; fsDescentRate_=0.f;
+    g_state.mode=FlightMode::FAILSAFE;
+    executionSubstate_=ExecutionSubstate::FAILSAFE_ENTRY;
+    fsDescentRate_=0.f;
     osMutexAcquire(g_state.safetyMtx, osWaitForever);
     g_state.errorFlags|=FC_ERR_RC_LOSS;
     osMutexRelease(g_state.safetyMtx);
+    executionSubstate_=ExecutionSubstate::FAILSAFE_DESCENT_RAMP;
 }
 
 Vector3f FlightModeFSM::rcToRateSetpointFPV(const RCInputs& rc) {

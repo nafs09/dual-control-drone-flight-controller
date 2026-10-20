@@ -60,6 +60,8 @@ For equations and state/error conventions see [process.md](process.md). The comp
 - **Failsafe:** receiver or safety faults can request a bounded NED-down velocity command. Landing transition depends on valid barometer data, low altitude, and low vertical speed.
 - **Landing:** the FSM reduces collective before disarming. Verify this transition and all motor outputs in simulation and on a secured bench before any flight evaluation.
 
+`FlightModeFSM` keeps the shared flight-mode enum as the governance state and tracks pre-arm qualification, camera setpoint selection/capture, failsafe descent ramping, landing ramping, and output inhibition in an internal execution substate. See the hierarchical state-machine diagram in [../ARCHITECTURE.md](../ARCHITECTURE.md).
+
 The active controller is the cascaded PID path. [src/control/future/](src/control/future/README.md) contains an NMPC-RTI interface scaffold only, without a solver or motor-output connection.
 
 ## Target allocation
